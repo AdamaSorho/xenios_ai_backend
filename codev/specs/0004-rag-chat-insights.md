@@ -410,9 +410,23 @@ class EmbeddingService:
 
 ### Retrieval Strategy
 
+**Similarity Threshold:** 0.7 (cosine similarity)
+- Results below this threshold are excluded from context
+- Prevents hallucination from irrelevant matches
+
+**No-Context Handling:**
+When no relevant context is found (empty embeddings, all below threshold, or missing data):
+1. Return response with `has_context: false` flag
+2. Use fallback prompt that acknowledges limited data
+3. Response should clearly state: "I don't have enough information about [topic] to provide specific guidance"
+4. Include `sources: []` (empty array)
+5. Set `confidence: 0.0`
+
 ```python
 class RetrievalService:
     """Retrieve relevant context for RAG."""
+
+    SIMILARITY_THRESHOLD = 0.7  # Minimum cosine similarity for relevance
 
     async def retrieve_context(
         self,
@@ -595,6 +609,10 @@ Respond in JSON format:
         changes = await self._identify_changes(client_id, trigger, context)
 
         # 3. Check for duplicate/similar recent insights
+        # Deduplication criteria:
+        # - Same insight_type within 7-day window
+        # - Same triggering metric type (if metric-based trigger)
+        # - Title embedding similarity > 0.85 to pending/approved insights
         if await self._is_duplicate_insight(client_id, changes):
             raise DuplicateInsightError("Similar insight already pending")
 
@@ -822,6 +840,31 @@ All endpoints require:
 - Chat history tied to coach-client relationship
 - Insights written to coach's queue only
 
+### PHI/PII Protection
+
+**Logging Redaction:**
+- NEVER log full embedding content or client health data
+- Log only: client_id, source_type, operation type, success/failure
+- Redact any PII from error messages before logging
+- Use structured logging with explicit allow-list of loggable fields
+
+**Data Retention:**
+- Embeddings: Retained while client is active, deleted on client deletion
+- Chat history: 90-day retention, then archived/deleted
+- Insight generation logs: 1-year retention for analytics
+- Follow same retention as MVP's health data policies
+
+**Access Auditing:**
+- Log all embedding reads/writes with coach_id, client_id, timestamp
+- Log all chat completions with coach_id, client_id, tokens_used
+- Log insight generation attempts (success/duplicate/failure)
+- Audit logs retained 2 years for compliance
+
+**Error Handling:**
+- Never expose client health data in error messages
+- Return generic errors to API; log details server-side
+- Use error codes that don't leak PHI (e.g., "RETRIEVAL_FAILED" not "No weight data found")
+
 ## Acceptance Criteria
 
 ### AC1: pgvector Setup
@@ -841,9 +884,11 @@ All endpoints require:
 ### AC3: Semantic Retrieval
 - [ ] Query embedding generated from user message
 - [ ] Top-K similar embeddings retrieved per client
+- [ ] Results below 0.7 similarity threshold excluded
 - [ ] Source content fetched for retrieved embeddings
 - [ ] Relevance scores calculated and returned
 - [ ] Filtering by source type works
+- [ ] No-context case returns empty sources and confidence 0.0
 
 ### AC4: Grounded Chat
 - [ ] Chat endpoint accepts client_id and message
@@ -851,11 +896,15 @@ All endpoints require:
 - [ ] Response generated using context
 - [ ] Source citations included in response
 - [ ] Response stays grounded in provided context
+- [ ] No-context: response acknowledges limited data, has_context=false
+- [ ] No-context: response does not hallucinate facts
 
 ### AC5: Insight Generation
 - [ ] Insights generated from health data changes
 - [ ] Insights written to MVP insights table
-- [ ] Duplicate detection prevents similar insights
+- [ ] Duplicate detection: same insight_type within 7 days blocked
+- [ ] Duplicate detection: title similarity > 0.85 blocked
+- [ ] Rate limiting: max 3 insights per client per week enforced
 - [ ] Confidence scores assigned
 - [ ] Triggering data recorded for audit
 
@@ -870,6 +919,13 @@ All endpoints require:
 - [ ] Chat response < 5 seconds (including retrieval + generation)
 - [ ] Insight generation < 10 seconds
 
+### AC8: Security & Authorization
+- [ ] Coach can only access their own clients' data
+- [ ] Invalid client_id returns 404 (not 403)
+- [ ] All operations logged with coach_id, client_id, timestamp
+- [ ] No PHI in logs or error messages
+- [ ] Rate limiting enforced per coach
+
 ## Test Plan
 
 ### Unit Tests
@@ -878,6 +934,9 @@ All endpoints require:
 - Vector similarity calculation
 - Context building for prompts
 - Insight JSON parsing
+- Similarity threshold filtering
+- No-context response generation
+- Insight deduplication logic
 
 ### Integration Tests
 - Full embedding update flow
@@ -886,12 +945,33 @@ All endpoints require:
 - Insight generation to MVP table
 - Celery task execution
 
+### Auth/Authorization Tests
+- Coach can only access their clients' embeddings
+- Coach cannot query other coaches' clients
+- Invalid client_id returns 404 (not 403, to avoid enumeration)
+- Missing X-API-Key returns 401
+- Invalid JWT returns 401
+- Expired JWT returns 401
+- System tasks bypass coach-client check with service key
+
+### Error Scenario Tests
+- **OpenAI API failure:** Graceful degradation, retry logic, error response
+- **Vector search timeout:** Returns partial results or error within SLA
+- **No embeddings for client:** Returns no-context response (not error)
+- **Empty query:** Returns 400 with validation error
+- **Malformed client_id:** Returns 400 with validation error
+- **Database connection failure:** Returns 503, logs error, alerts
+- **Rate limit exceeded:** Returns 429 with retry-after header
+- **Insight generation fails mid-process:** Rolls back, logs, doesn't create partial insight
+
 ### Test Data
 - Sample client with health profile
 - Health metrics over 30 days
 - 2-3 session summaries
 - 1 lab result
 - Sample check-ins
+- Client with no data (for no-context testing)
+- Multiple coaches with separate clients (for auth testing)
 
 ## Dependencies
 
@@ -923,11 +1003,52 @@ All endpoints require:
 
 **Estimated: ~$5-10/month per active client**
 
-## Open Questions
+## Design Decisions (Resolved)
 
-1. **Embedding update triggers**: Should we update on every data change or batch nightly?
-2. **Insight frequency**: How often should insights be generated per client?
-3. **Context window**: How much historical context to include in chat?
+### Embedding Update Triggers
+**Decision:** Hybrid approach - immediate for high-value data, nightly batch for the rest.
+
+**Immediate updates (via Celery task on data change):**
+- Lab results (high impact, infrequent)
+- Session summaries (immediate relevance for follow-up)
+- Health profile changes (affects all context)
+
+**Nightly batch updates:**
+- Health metrics (aggregated weekly summaries)
+- Check-in summaries (daily aggregation)
+- Message threads (end-of-day summary)
+
+**Rationale:** Balances freshness with cost. High-impact, infrequent events update immediately. High-frequency, lower-impact data batches for efficiency.
+
+### Insight Generation Frequency
+**Decision:** Maximum 3 insights per client per week, triggered by events not schedule.
+
+**Event triggers:**
+- Metric milestone reached (goal progress > 80% or significant regression)
+- Lab result uploaded (always generates insight)
+- Session completed (if notable changes discussed)
+- Check-in streak milestone (7, 14, 30 days)
+
+**Rate limiting:**
+- Max 3 insights per client per week (regardless of triggers)
+- Max 1 insight per trigger type per day
+- Cooldown: 48 hours after insight is approved/rejected before same type
+
+**Rationale:** Prevents insight fatigue. Quality over quantity. Coaches can manually trigger if needed.
+
+### Context Window for Chat
+**Decision:** 10 items maximum, 4,000 tokens total context limit.
+
+**Selection priority:**
+1. Health profile (always included, ~500 tokens)
+2. Most recent session summary (~800 tokens)
+3. Relevant metric summaries (top 3 by similarity, ~600 tokens each)
+4. Recent check-ins (last 7 days, ~400 tokens)
+5. Lab results if medically relevant to query (~500 tokens)
+
+**Truncation:** If total exceeds 4,000 tokens, trim oldest/lowest-relevance items first.
+
+**Rationale:** Opus 4.5 context is expensive. 4K tokens provides good grounding while controlling costs. Most queries don't need full history.
 
 ## Future Considerations
 
