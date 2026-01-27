@@ -125,15 +125,15 @@ projects:
   - id: "0002"
     title: "Document Extraction Pipeline"
     summary: "IBM Docling integration for InBody PDFs, lab results, and wearable data extraction"
-    status: conceived
+    status: specified
     priority: high
     files:
       spec: codev/specs/0002-document-extraction-pipeline.md
-      plan: null
+      plan: codev/plans/0002-document-extraction-pipeline.md
       review: null
     dependencies: ["0001"]
     tags: [features, extraction, ai]
-    notes: "Depends on foundation; PRD Week 2. Spec ready for review."
+    notes: "Depends on foundation; PRD Week 2. Spec approved 2025-01-27."
 
   - id: "0003"
     title: "Transcription & Session Processing"
