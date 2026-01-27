@@ -1551,18 +1551,25 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
         # Log audit entry
         duration_ms = int((time.time() - start_time) * 1000)
 
+        # Note: For POST requests, client_id is in request body, not query params
+        # We capture it from the endpoint handlers via request.state after processing
+        # This avoids parsing the body twice and risking PHI exposure
+        client_id = getattr(request.state, "client_id", None) or request.query_params.get("client_id")
+
         await logger.ainfo(
             "api_request",
             path=request.url.path,
             method=request.method,
             coach_id=getattr(request.state, "user_id", None),
-            client_id=request.query_params.get("client_id"),
+            client_id=client_id,
             status_code=response.status_code,
             duration_ms=duration_ms,
         )
 
         return response
 ```
+
+**Note**: Endpoint handlers should set `request.state.client_id` after parsing the request body to enable audit logging without body parsing in middleware.
 
 ### 5.5.3 Configure structured logging
 
@@ -1599,7 +1606,28 @@ def _redact_phi_processor(logger, method_name, event_dict):
     return event_dict
 ```
 
-### 5.5.4 Configure exception handlers with PHI redaction
+### 5.5.4 Register middleware in FastAPI app
+
+**File**: `app/main.py` (update)
+
+```python
+from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.audit_log import AuditLogMiddleware
+from app.core.logging import configure_logging
+from app.core.exceptions import generic_exception_handler
+
+# Configure structured logging at startup
+configure_logging()
+
+# Add middleware (order matters: rate limit before audit)
+app.add_middleware(AuditLogMiddleware)
+app.add_middleware(RateLimitMiddleware)
+
+# Register exception handler
+app.add_exception_handler(Exception, generic_exception_handler)
+```
+
+### 5.5.5 Configure exception handlers with PHI redaction
 
 **File**: `app/core/exceptions.py` (add)
 
@@ -1940,7 +1968,7 @@ After each phase, verify:
 ### Phase 1
 - [ ] pgvector extension enabled
 - [ ] All tables created with correct schema
-- [ ] Indexes created (including HNSW vector index)
+- [ ] Indexes created (including IVFFlat vector index with lists=100)
 - [ ] Can insert and query sample vector
 
 ### Phase 2
