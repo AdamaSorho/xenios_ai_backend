@@ -112,15 +112,15 @@ projects:
   - id: "0001"
     title: "AI Backend Foundation"
     summary: "Core infrastructure for Xenios AI Backend - FastAPI, Celery, Redis, Docker Compose, auth, and LLM integration"
-    status: implementing
+    status: committed
     priority: high
     files:
       spec: codev/specs/0001-ai-backend-foundation.md
       plan: codev/plans/0001-ai-backend-foundation.md
-      review: null
+      review: codev/reviews/0001-ai-backend-foundation.md
     dependencies: []
     tags: [infrastructure, architecture, api]
-    notes: "Foundation project - all other AI backend features depend on this. Spec approved 2025-01-27."
+    notes: "Foundation project complete. PR #1 merged 2025-01-27. Ready for production validation."
 
   - id: "0002"
     title: "Document Extraction Pipeline"
