@@ -332,6 +332,214 @@ class RiskAlert(BaseModel):
     created_at: datetime
 ```
 
+#### API Response Schemas (Additional)
+
+```python
+class SessionAnalyticsSummary(BaseModel):
+    """Summary view for session list endpoints."""
+    job_id: UUID
+    session_date: date
+    duration_minutes: float
+    coach_talk_percentage: float
+    client_talk_percentage: float
+    engagement_score: float
+    client_sentiment_score: float
+    cue_count: int  # Total cues detected
+    has_warnings: bool  # High resistance, low engagement, etc.
+
+
+class SessionComparison(BaseModel):
+    """Comparison between current and previous session."""
+    previous_session_date: date
+    engagement_change: float  # +/- percentage points
+    sentiment_change: float  # +/- on -1 to 1 scale
+    talk_ratio_change: float  # +/- percentage points (client)
+    notable_changes: list[str]  # Human-readable descriptions
+
+
+class TrendData(BaseModel):
+    """Trend data for a single metric."""
+    metric_name: str
+    current_value: float
+    previous_value: float
+    change: float
+    change_percentage: float
+    trend: str  # "improving", "stable", "declining"
+    data_points: list[DataPoint]
+
+
+class DataPoint(BaseModel):
+    """Single data point in a trend."""
+    date: date
+    value: float
+    session_id: UUID | None
+
+
+class RiskScoreHistory(BaseModel):
+    """Historical risk score entry."""
+    computed_at: datetime
+    risk_score: float
+    risk_level: str
+    top_factor: str  # Primary contributing factor
+```
+
+### Calculation Formulas
+
+#### Engagement Score (0-100)
+
+The engagement score is a weighted composite of multiple factors:
+
+```python
+def calculate_engagement_score(
+    client_talk_percentage: float,      # Target: 40-60%
+    response_elaboration: float,         # Average words per client turn
+    turn_count: int,                     # Total back-and-forth
+    sentiment_score: float,              # -1 to 1
+    commitment_cue_count: int,           # Positive indicator
+    resistance_cue_count: int,           # Negative indicator
+) -> float:
+    """
+    Engagement Score = weighted sum of normalized components.
+
+    Components (weights sum to 100):
+    - Participation balance (25): How close to 50/50 talk time
+    - Response depth (25): Words per response vs baseline
+    - Interaction density (20): Turns per minute
+    - Emotional engagement (15): Sentiment positivity
+    - Commitment signals (15): Commitment vs resistance cues
+    """
+    # 1. Participation balance (25 points max)
+    # Optimal: 50% client talk. Penalty for deviation.
+    deviation = abs(client_talk_percentage - 50)
+    participation_score = max(0, 25 - deviation * 0.5)
+
+    # 2. Response depth (25 points max)
+    # Baseline: 15 words/response. Max score at 30+ words.
+    words_per_turn = response_elaboration
+    depth_score = min(25, (words_per_turn / 30) * 25)
+
+    # 3. Interaction density (20 points max)
+    # Baseline: 2 turns/minute is good engagement
+    # (calculated externally as turns / duration_minutes)
+    turns_per_minute = turn_count / max(duration_minutes, 1)
+    density_score = min(20, turns_per_minute * 10)
+
+    # 4. Emotional engagement (15 points max)
+    # Map -1..1 sentiment to 0..15
+    emotion_score = (sentiment_score + 1) / 2 * 15
+
+    # 5. Commitment signals (15 points max)
+    # More commitments than resistance = positive
+    if commitment_cue_count + resistance_cue_count == 0:
+        commitment_score = 7.5  # Neutral
+    else:
+        ratio = commitment_cue_count / (commitment_cue_count + resistance_cue_count)
+        commitment_score = ratio * 15
+
+    return participation_score + depth_score + density_score + emotion_score + commitment_score
+```
+
+#### Sentiment Variance
+
+Measures how much sentiment fluctuated during the session:
+
+```python
+def calculate_sentiment_variance(utterance_sentiments: list[float]) -> float:
+    """
+    Calculate variance of sentiment across client utterances.
+
+    High variance (>0.3): Client emotions fluctuated significantly
+    Low variance (<0.1): Consistent emotional tone throughout
+
+    Returns: Standard deviation of sentiment scores (0 to ~1)
+    """
+    if len(utterance_sentiments) < 2:
+        return 0.0
+
+    mean = sum(utterance_sentiments) / len(utterance_sentiments)
+    variance = sum((s - mean) ** 2 for s in utterance_sentiments) / len(utterance_sentiments)
+    return variance ** 0.5  # Standard deviation
+```
+
+#### Trend Calculation
+
+Trends are calculated by comparing recent windows:
+
+```python
+def calculate_trend(
+    values: list[float],  # Ordered oldest to newest
+    threshold: float = 0.1,  # 10% change = significant
+) -> str:
+    """
+    Determine trend direction from a series of values.
+
+    Method: Linear regression slope normalized by mean.
+
+    Returns: "improving", "stable", or "declining"
+    """
+    if len(values) < 2:
+        return "stable"
+
+    # Simple: compare first half average to second half average
+    midpoint = len(values) // 2
+    first_half_avg = sum(values[:midpoint]) / midpoint if midpoint > 0 else 0
+    second_half_avg = sum(values[midpoint:]) / (len(values) - midpoint)
+
+    if first_half_avg == 0:
+        return "stable"
+
+    change_ratio = (second_half_avg - first_half_avg) / abs(first_half_avg)
+
+    if change_ratio > threshold:
+        return "improving"  # For engagement/sentiment (higher is better)
+    elif change_ratio < -threshold:
+        return "declining"
+    else:
+        return "stable"
+
+# Note: For metrics where lower is better (e.g., resistance_ratio),
+# the interpretation is inverted by the caller.
+```
+
+#### Risk Score Normalization
+
+Each risk factor contributes a portion of its weight based on severity:
+
+```python
+def normalize_factor_contribution(
+    value: float,
+    warning_threshold: float,
+    critical_threshold: float,
+    weight: float,
+    inverse: bool = False,  # True if lower values are worse
+) -> float:
+    """
+    Convert a metric value to a risk contribution.
+
+    Below warning: 0 contribution
+    At warning: 50% of weight
+    At critical: 100% of weight
+    Above critical: 100% of weight (capped)
+
+    Linear interpolation between thresholds.
+    """
+    if inverse:
+        # Flip for metrics where low = bad (e.g., engagement)
+        value = -value
+        warning_threshold = -warning_threshold
+        critical_threshold = -critical_threshold
+
+    if value <= warning_threshold:
+        return 0.0
+    elif value >= critical_threshold:
+        return weight
+    else:
+        # Linear interpolation
+        range_size = critical_threshold - warning_threshold
+        position = (value - warning_threshold) / range_size
+        return weight * (0.5 + position * 0.5)
+```
+
 ### Project Structure (Additions)
 
 ```
@@ -517,6 +725,12 @@ Respond in JSON format:
 class CueDetectionService:
     """Detect language cues using LLM analysis."""
 
+    # LLM Configuration
+    MODEL = "gpt-4o-mini"  # Cost-effective for classification
+    MAX_RETRIES = 2
+    TIMEOUT_SECONDS = 30
+    RATE_LIMIT_DELAY = 1.0  # Seconds between requests
+
     def __init__(self, llm_client: LLMClient):
         self.llm = llm_client
         self.min_confidence = 0.7  # Only keep high-confidence cues
@@ -536,7 +750,12 @@ class CueDetectionService:
             # Get context (previous utterances)
             context = self._get_context(utterances, utterance)
 
-            detected = await self._analyze_utterance(utterance, context)
+            try:
+                detected = await self._analyze_utterance_with_retry(utterance, context)
+            except CueDetectionError as e:
+                # Log error but continue - cue detection is non-critical
+                logger.warning(f"Cue detection failed for utterance {utterance.id}: {e}")
+                continue
 
             for cue in detected:
                 if cue.confidence >= self.min_confidence:
@@ -544,13 +763,105 @@ class CueDetectionService:
                         utterance_id=utterance.id,
                         cue_type=cue.cue_type,
                         confidence=cue.confidence,
-                        text_excerpt=utterance.text[:200],
+                        text_excerpt=self._redact_pii(utterance.text[:200]),
                         timestamp=utterance.start_time,
-                        preceding_context=context,
+                        preceding_context=self._redact_pii(context) if context else None,
                         interpretation=cue.interpretation,
                     ))
 
+            # Rate limiting between LLM calls
+            await asyncio.sleep(self.RATE_LIMIT_DELAY)
+
         return cues
+
+    async def _analyze_utterance_with_retry(
+        self,
+        utterance: Utterance,
+        context: str,
+    ) -> list[DetectedCue]:
+        """Analyze with retries and error handling."""
+        last_error = None
+
+        for attempt in range(self.MAX_RETRIES + 1):
+            try:
+                response = await asyncio.wait_for(
+                    self._call_llm(utterance, context),
+                    timeout=self.TIMEOUT_SECONDS,
+                )
+                return self._parse_llm_response(response)
+
+            except asyncio.TimeoutError:
+                last_error = CueDetectionError("LLM timeout")
+            except json.JSONDecodeError as e:
+                last_error = CueDetectionError(f"Malformed JSON from LLM: {e}")
+            except RateLimitError:
+                # Exponential backoff on rate limit
+                await asyncio.sleep(2 ** attempt)
+                last_error = CueDetectionError("Rate limit exceeded")
+            except Exception as e:
+                last_error = CueDetectionError(f"Unexpected error: {e}")
+
+            if attempt < self.MAX_RETRIES:
+                await asyncio.sleep(1)  # Brief pause before retry
+
+        raise last_error
+
+    def _parse_llm_response(self, response: str) -> list[DetectedCue]:
+        """Parse and validate LLM JSON response."""
+        try:
+            data = json.loads(response)
+        except json.JSONDecodeError:
+            # Try to extract JSON from markdown code blocks
+            import re
+            match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response, re.DOTALL)
+            if match:
+                data = json.loads(match.group(1))
+            else:
+                raise
+
+        cues = data.get("cues", [])
+        validated = []
+
+        for cue in cues:
+            # Validate required fields
+            if not all(k in cue for k in ["cue_type", "confidence"]):
+                continue
+            # Validate cue_type is known
+            if cue["cue_type"] not in [ct.value for ct in CueType]:
+                continue
+            # Validate confidence range
+            conf = float(cue["confidence"])
+            if not (0 <= conf <= 1):
+                continue
+
+            validated.append(DetectedCue(
+                cue_type=cue["cue_type"],
+                confidence=conf,
+                interpretation=cue.get("interpretation", ""),
+            ))
+
+        return validated
+
+    def _redact_pii(self, text: str) -> str:
+        """
+        Redact potential PII from text excerpts.
+
+        Redacts:
+        - Phone numbers
+        - Email addresses
+        - Names (using simple patterns)
+        - Addresses
+        """
+        import re
+
+        # Phone numbers
+        text = re.sub(r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b', '[PHONE]', text)
+        # Email addresses
+        text = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '[EMAIL]', text)
+        # SSN patterns
+        text = re.sub(r'\b\d{3}-\d{2}-\d{4}\b', '[SSN]', text)
+
+        return text
 ```
 
 #### Risk Scoring Algorithm
@@ -976,8 +1287,75 @@ All endpoints require:
 
 **Ownership enforcement**:
 - `coach_id` extracted from JWT claims
-- Client access verified via `coach_clients` relationship table
+- Client access verified via `coach_clients` relationship table (in MVP database)
 - 404 returned for unauthorized access (not 403)
+
+### Coach-Client Relationship Verification
+
+The coach-client relationship is stored in the MVP's Supabase database:
+
+```sql
+-- MVP table (not created by this spec)
+-- public.coach_clients
+--   id UUID PRIMARY KEY
+--   coach_id UUID REFERENCES auth.users(id)
+--   client_id UUID REFERENCES auth.users(id)
+--   status VARCHAR(20)  -- 'active', 'inactive', 'pending'
+--   created_at TIMESTAMPTZ
+```
+
+**Verification query** (used by authorization middleware):
+```python
+async def verify_coach_client_relationship(
+    coach_id: UUID,
+    client_id: UUID,
+    db: AsyncSession,
+) -> bool:
+    """Check if coach has active relationship with client."""
+    result = await db.execute(
+        text("""
+            SELECT 1 FROM public.coach_clients
+            WHERE coach_id = :coach_id
+            AND client_id = :client_id
+            AND status = 'active'
+        """),
+        {"coach_id": str(coach_id), "client_id": str(client_id)}
+    )
+    return result.scalar() is not None
+```
+
+## Data Retention & Privacy
+
+### Retention Policy
+
+| Data Type | Retention | Cleanup |
+|-----------|-----------|---------|
+| Session Analytics | 2 years | Cascade delete with transcription job |
+| Language Cues | 2 years | Cascade delete with session analytics |
+| Client Analytics | 1 year | Auto-delete stale windows |
+| Risk Scores | 90 days | Auto-delete expired scores |
+| Risk Alerts | 1 year | Archive after resolution |
+
+### Privacy Protections
+
+1. **PII Redaction**: Text excerpts in language cues are scrubbed of phone numbers, emails, SSNs
+2. **No Raw Transcript Storage**: Analytics reference utterance IDs, not raw text
+3. **Audit Logging**: All analytics access logged with coach_id, client_id, timestamp
+4. **Structured Logging**: PHI excluded from log fields (engagement scores, cue counts OK)
+
+### Cleanup Tasks
+
+```python
+@celery_app.task
+def cleanup_expired_risk_scores():
+    """Delete risk scores past valid_until. Runs daily."""
+    # DELETE FROM ai_backend.risk_scores WHERE valid_until < NOW()
+
+@celery_app.task
+def archive_old_analytics():
+    """Archive analytics older than 2 years. Runs monthly."""
+    # Move to archive table or delete based on policy
+```
 
 ## Error Handling
 
