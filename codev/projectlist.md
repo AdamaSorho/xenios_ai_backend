@@ -130,10 +130,10 @@ projects:
     files:
       spec: codev/specs/0002-document-extraction-pipeline.md
       plan: codev/plans/0002-document-extraction-pipeline.md
-      review: null
+      review: codev/reviews/0002-document-extraction-pipeline.md
     dependencies: ["0001"]
     tags: [features, extraction, ai]
-    notes: "PR #2 merged 2025-01-27. Ready for production validation."
+    notes: "PR #3 merged 2025-01-27. Ready for production validation."
 
   - id: "0003"
     title: "Transcription & Session Processing"
