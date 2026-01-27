@@ -421,6 +421,19 @@ from uuid import UUID
 from datetime import date, datetime
 from typing import Optional
 
+class SessionAnalyticsSummary(BaseModel):
+    """Compact view for session list endpoints (GET /clients/{id}/sessions)."""
+    job_id: UUID
+    session_date: date
+    duration_minutes: float
+    coach_talk_percentage: float
+    client_talk_percentage: float
+    engagement_score: float
+    client_sentiment_score: float
+    cue_count: int  # Total cues detected
+    has_warnings: bool  # True if quality_warning is True on session
+    # quality_warnings field omitted in summary; use full endpoint for details
+
 class RiskScoreHistory(BaseModel):
     """Historical risk score for trend display."""
     computed_at: datetime
@@ -442,6 +455,11 @@ class ClientAnalyticsSummaryResponse(BaseModel):
     risk_level: str | None  # Null if no valid risk score
     risk_score_stale: bool  # True if risk score > 7 days old
     quality_warnings: list[str]  # e.g., ["low_confidence_diarization"]
+
+class SessionListResponse(BaseModel):
+    """GET /clients/{id}/sessions response."""
+    sessions: list[SessionAnalyticsSummary]
+    total: int
 ```
 
 **Query for risk score history:**
@@ -985,7 +1003,37 @@ class AlertsService:
 
 ## Phase 6: API Endpoints
 
-**Goal**: Expose analytics via REST API.
+**Goal**: Expose analytics via REST API with proper authentication and authorization.
+
+### 6.0 Authentication & Authorization Strategy
+
+**Authentication** (inherited from Spec 0001):
+- `X-API-Key` header: Backend-to-backend auth (verified by API key middleware)
+- `Authorization: Bearer <JWT>`: User auth from Supabase (verified by `get_current_user` dependency)
+
+Both are required on all analytics endpoints.
+
+**Authorization** (per spec):
+- Coach can only access their own clients
+- **Return 404 (not 403) for unauthorized access** to prevent enumeration
+- Client access verified via `coach_clients` relationship table in MVP database
+
+**Implementation pattern**:
+
+```python
+from fastapi import HTTPException
+
+async def get_authorized_client(
+    client_id: UUID,
+    coach_id: UUID,
+    db: AsyncSession,
+) -> None:
+    """Verify coach-client relationship. Raises 404 if unauthorized."""
+    has_relationship = await verify_coach_client_relationship(coach_id, client_id, db)
+    if not has_relationship:
+        # Return 404 (not 403) per spec - prevents enumeration
+        raise HTTPException(status_code=404, detail="Client not found")
+```
 
 ### 6.1 Create analytics router
 
@@ -995,14 +1043,19 @@ class AlertsService:
 from fastapi import APIRouter, Depends, HTTPException, Query
 from uuid import UUID
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_api_key
 from app.schemas.analytics import *
 from app.services.analytics.session_analytics import SessionAnalyticsService
 from app.services.analytics.client_analytics import ClientAnalyticsService
 from app.services.analytics.risk_scoring import RiskScoringService
 from app.services.analytics.alerts import AlertsService
+from app.services.analytics.authorization import get_authorized_client
 
-router = APIRouter(prefix="/analytics", tags=["analytics"])
+router = APIRouter(
+    prefix="/analytics",
+    tags=["analytics"],
+    dependencies=[Depends(require_api_key)],  # X-API-Key required on all endpoints
+)
 
 
 @router.get("/sessions/{job_id}", response_model=SessionAnalyticsDetailResponse)
@@ -1291,35 +1344,57 @@ def compute_summary_quality_warnings(
 
 **Implementation** in Celery task:
 
+**Note**: Cue detection is async (LLM calls). We use `asyncio.run()` to run async code in sync Celery tasks.
+
 ```python
 # app/workers/tasks/analytics.py
+import asyncio
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 @celery_app.task(bind=True, max_retries=3)
 def compute_session_analytics(self, job_id: str):
     """Compute analytics with graceful cue detection failure handling."""
-    try:
-        # 1. Compute talk-time, coaching style, engagement (no LLM)
-        session_analytics = session_service.compute_basic_metrics(job_id)
+    # Run async code in sync Celery task
+    asyncio.run(_compute_session_analytics_async(self, job_id))
 
-        # 2. Attempt cue detection (may fail)
+
+async def _compute_session_analytics_async(task, job_id: str):
+    """Async implementation of session analytics computation."""
+    async with get_async_db_session() as db:
         try:
-            cues = await cue_service.detect_cues(utterances, session_analytics.id)
-            session_analytics = update_cue_counts(session_analytics, cues)
-        except CueDetectionError as e:
-            logger.warning(
-                "cue_detection_failed",
-                job_id=job_id,
-                error=str(e),
-            )
-            # Continue without cues - analytics still valid
-            session_analytics.quality_warnings.append("cue_detection_failed")
+            session_service = SessionAnalyticsService(db)
+            cue_service = CueDetectionService(get_llm_client())
 
-        # 3. Save analytics (with or without cues)
-        db.add(session_analytics)
-        await db.commit()
+            # 1. Compute basic metrics (no LLM, fast)
+            session_analytics, utterances = await session_service.compute_basic_metrics(job_id)
 
-    except Exception as e:
-        self.retry(exc=e, countdown=60)
+            # 2. Attempt cue detection (async LLM calls, may fail)
+            try:
+                cues = await cue_service.detect_cues(utterances, session_analytics.id)
+                session_analytics = update_cue_counts(session_analytics, cues)
+                # Save cues
+                for cue in cues:
+                    db.add(cue)
+            except CueDetectionError as e:
+                logger.warning(
+                    "cue_detection_failed",
+                    job_id=job_id,
+                    error=str(e),
+                )
+                # Continue without cues - analytics still valid
+                session_analytics.quality_warnings = session_analytics.quality_warnings or []
+                session_analytics.quality_warnings.append("cue_detection_failed")
+                session_analytics.quality_warning = True
+
+            # 3. Save analytics (with or without cues)
+            db.add(session_analytics)
+            await db.commit()
+
+        except Exception as e:
+            await db.rollback()
+            task.retry(exc=e, countdown=60)
 ```
 
 ### Phase 6.5 Tests
