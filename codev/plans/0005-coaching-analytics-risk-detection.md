@@ -1005,6 +1005,8 @@ class AlertsService:
 
 **Goal**: Expose analytics via REST API with proper authentication and authorization.
 
+**Note**: All endpoints below are defined in the spec. The `/trends`, `/compute/{client_id}`, and `/coach/summary` endpoints are spec requirements, not extensions.
+
 ### 6.0 Authentication & Authorization Strategy
 
 **Authentication** (inherited from Spec 0001):
@@ -1064,7 +1066,20 @@ async def get_session_analytics(
     current_user = Depends(get_current_user),
     db = Depends(get_db),
 ):
-    """Get analytics for a specific session."""
+    """Get analytics for a specific session.
+
+    Includes SessionComparison with previous session (Should Have per spec).
+    Comparison is computed on-demand by fetching previous session analytics.
+    """
+    # 1. Fetch session analytics
+    # 2. Authorize (coach owns this client)
+    # 3. Fetch previous session analytics (by session_date < current, same client)
+    # 4. Compute SessionComparison if previous exists:
+    #    - engagement_change = current.engagement_score - previous.engagement_score
+    #    - sentiment_change = current.client_sentiment_score - previous.client_sentiment_score
+    #    - talk_ratio_change = current.client_talk_percentage - previous.client_talk_percentage
+    #    - notable_changes = generate_notable_changes(current, previous)
+    # 5. Return SessionAnalyticsDetailResponse with comparison (or None if first session)
     pass
 
 
