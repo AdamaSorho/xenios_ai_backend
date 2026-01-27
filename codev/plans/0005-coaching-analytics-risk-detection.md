@@ -400,7 +400,7 @@ class RiskAlert(Base):
 **File**: `app/schemas/analytics.py`
 
 Define request/response schemas matching the spec:
-- `SessionAnalyticsResponse` - Full session analytics with cues
+- `SessionAnalyticsDetailResponse` - Full session analytics with cues and comparison
 - `SessionAnalyticsSummary` - Compact view for list endpoints
 - `LanguageCueResponse` - Individual cue with context
 - `ClientAnalyticsResponse` - Aggregate client analytics
@@ -1071,8 +1071,9 @@ async def get_session_analytics(
     Includes SessionComparison with previous session (Should Have per spec).
     Comparison is computed on-demand by fetching previous session analytics.
     """
-    # 1. Fetch session analytics
-    # 2. Authorize (coach owns this client)
+    # 1. Fetch session analytics (contains client_id, coach_id from job)
+    # 2. Authorize: job.coach_id must match current_user.id
+    #    (session_analytics table has coach_id FK from transcription_job)
     # 3. Fetch previous session analytics (by session_date < current, same client)
     # 4. Compute SessionComparison if previous exists:
     #    - engagement_change = current.engagement_score - previous.engagement_score
