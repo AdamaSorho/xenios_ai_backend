@@ -20,6 +20,7 @@ celery_app.conf.update(
         "app.workers.tasks.extraction.*": {"queue": "extraction"},
         "app.workers.tasks.llm.*": {"queue": "llm"},
         "app.workers.tasks.analytics.*": {"queue": "analytics"},
+        "app.workers.tasks.rag.*": {"queue": "llm"},  # RAG tasks use LLM queue (Spec 0004)
     },
     # Default queue for unrouted tasks
     task_default_queue="default",
