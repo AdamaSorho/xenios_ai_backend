@@ -31,6 +31,10 @@ dependencies = [
     # Transcription (Spec 0003)
     "deepgram-sdk>=3.0.0",
     "ffmpeg-python>=0.2.0",
+    # RAG System (Spec 0004)
+    "pgvector>=0.2.0",
+    "openai>=1.0.0",
+    "tiktoken>=0.5.0",
 ]
 
 [project.optional-dependencies]

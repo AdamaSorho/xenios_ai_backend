@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     # LLM Providers
     openrouter_api_key: str
+    openai_api_key: str = ""  # For embeddings (ada-002)
 
     # External Services
     deepgram_api_key: str = ""
@@ -51,6 +52,13 @@ class Settings(BaseSettings):
     # Extraction settings
     extraction_max_file_size_mb: int = 50
     extraction_webhook_url: str = ""  # Optional webhook for completion notifications
+
+    # RAG Settings (Spec 0004)
+    rag_similarity_threshold: float = 0.7
+    rag_max_context_items: int = 10
+    rag_max_context_tokens: int = 4000
+    rag_embedding_model: str = "text-embedding-ada-002"
+    rag_embedding_dimensions: int = 1536
 
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
