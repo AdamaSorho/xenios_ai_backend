@@ -677,6 +677,130 @@ CREATE INDEX idx_transcripts_fulltext ON ai_backend.transcripts
     USING gin(to_tsvector('english', full_text));
 ```
 
+## Security & Authorization
+
+### Authentication
+All endpoints require:
+1. **X-API-Key header**: Backend-to-backend authentication (from MVP)
+2. **Authorization header**: Bearer JWT from Supabase Auth
+
+### Authorization Rules
+
+| Endpoint | Who Can Access |
+|----------|----------------|
+| POST /upload | Coach (creates job for their client) |
+| GET /status/{job_id} | Coach who owns the job |
+| GET /{job_id}/transcript | Coach who owns the job |
+| GET /{job_id}/summary | Coach who owns the job |
+| GET /sessions | Coach (sees only their jobs) |
+| DELETE /{job_id} | Coach who owns the job |
+
+**Ownership enforcement**:
+- `coach_id` extracted from JWT claims
+- All queries filter by `coach_id = current_user.id`
+- 404 returned for jobs owned by other coaches (not 403, to prevent enumeration)
+
+### Webhook Security
+
+Webhooks are signed to prevent spoofing:
+
+```python
+# Webhook signature generation
+import hmac
+import hashlib
+
+def sign_webhook(payload: dict, secret: str) -> str:
+    message = json.dumps(payload, sort_keys=True)
+    signature = hmac.new(
+        secret.encode(),
+        message.encode(),
+        hashlib.sha256
+    ).hexdigest()
+    return f"sha256={signature}"
+
+# Headers sent with webhook
+headers = {
+    "X-Webhook-Signature": sign_webhook(payload, webhook_secret),
+    "X-Webhook-Timestamp": str(int(time.time())),
+    "X-Webhook-ID": str(uuid4()),  # For idempotency
+}
+```
+
+**Webhook validation requirements**:
+- URL must be HTTPS (except localhost for development)
+- URL must respond to HEAD request with 2xx
+- Signature verification documented for webhook consumers
+- Timestamp checked (reject if > 5 minutes old)
+
+## Data Retention & Privacy
+
+### Retention Policy
+
+| Data Type | Retention | Deletion Trigger |
+|-----------|-----------|------------------|
+| Audio files (S3) | 90 days | Auto-delete via S3 lifecycle |
+| Transcripts | Indefinite | Manual deletion or client deletion |
+| Summaries | Indefinite | Cascade from transcript |
+| Job metadata | Indefinite | Cascade from transcript |
+
+### Deletion Cascade
+
+When a transcription job is deleted:
+1. Audio file deleted from S3
+2. Transcript record deleted (CASCADE)
+3. Utterances deleted (CASCADE)
+4. Summary deleted (CASCADE)
+5. Job record deleted
+
+### Privacy Considerations
+
+- Audio files stored with randomized UUIDs (not client names)
+- No PII in S3 object keys
+- Transcripts contain PII (client health discussions) - encrypted at rest
+- Logs sanitized: no transcript content in logs
+- Deepgram data processing agreement required (HIPAA compliance)
+
+## Error Handling
+
+### File Size & Duration Limits
+
+| Limit | Value | Behavior |
+|-------|-------|----------|
+| Max file size | 500 MB | Reject at upload with 413 |
+| Max duration | 2 hours | Reject after duration check with 400 |
+| Min duration | 10 seconds | Reject with 400 |
+
+### Failure Modes
+
+| Failure | Retry | Behavior |
+|---------|-------|----------|
+| S3 upload fails | 3x | Mark job failed, return error |
+| Deepgram timeout | 2x | Exponential backoff (30s, 60s) |
+| Deepgram API error | 2x | Log error, mark failed |
+| LLM summarization fails | 2x | Mark summary_failed, transcript still available |
+| Webhook delivery fails | 5x | Exponential backoff (1m, 5m, 15m, 30m, 1h) |
+
+### Partial Results
+
+If summarization fails but transcription succeeds:
+- Job status: `partial`
+- Transcript available via API
+- Summary endpoint returns 404
+- Webhook indicates `"summary_status": "failed"`
+
+### Multi-Speaker Handling
+
+| Scenario | Behavior |
+|----------|----------|
+| 2 speakers | Label as coach/client based on heuristics |
+| 3+ speakers | Label speaker 0 as coach, others as "participant_N" |
+| 1 speaker | Label as "speaker" (no coach/client distinction) |
+| Unclear speakers | Low confidence score, "unknown" labels |
+
+Speaker confidence threshold: 0.7
+- Above 0.7: Assign coach/client label
+- Below 0.7: Label as "speaker_N" with note for manual review
+
 ## Acceptance Criteria
 
 ### AC1: Deepgram Integration
@@ -744,6 +868,25 @@ CREATE INDEX idx_transcripts_fulltext ON ai_backend.transcripts
 - [ ] Status endpoint responds in < 100ms
 - [ ] Transcript retrieval in < 500ms
 
+### AC10: Security & Authorization
+- [ ] Endpoints require valid API key and JWT
+- [ ] Coach can only access their own jobs
+- [ ] 404 returned for other coaches' jobs (not 403)
+- [ ] Webhook signatures validated
+- [ ] HTTPS required for webhook URLs (except localhost)
+
+### AC11: Error Handling
+- [ ] Files > 500MB rejected with 413
+- [ ] Audio > 2 hours rejected with 400
+- [ ] Deepgram failures retried with backoff
+- [ ] Partial results available if summary fails
+- [ ] 3+ speakers labeled correctly
+
+### AC12: Data Retention
+- [ ] Audio files deleted after 90 days (S3 lifecycle)
+- [ ] DELETE endpoint removes all associated data
+- [ ] No PII in logs or S3 keys
+
 ## Test Plan
 
 ### Unit Tests
@@ -772,6 +915,14 @@ CREATE INDEX idx_transcripts_fulltext ON ai_backend.transcripts
 - Verify speaker labels accuracy
 - Review summary quality
 - Test webhook delivery
+
+### Security Tests
+- Unauthorized access returns 401
+- Cross-coach access returns 404
+- Invalid webhook signature rejected
+- File size limits enforced
+- Audio duration limits enforced
+- Webhook HTTPS requirement enforced
 
 ## Dependencies
 
@@ -823,8 +974,9 @@ CREATE INDEX idx_transcripts_fulltext ON ai_backend.transcripts
 
 1. **Speaker confirmation UI**: Should coaches confirm/correct speaker labels?
 2. **Transcript editing**: Allow coaches to edit transcripts for errors?
-3. **Retention policy**: How long to keep audio files? (Suggest 90 days)
-4. **Real-time option**: Priority for live transcription in future?
+3. **Real-time option**: Priority for live transcription in future?
+
+*Note: Retention policy resolved - 90 days for audio, indefinite for transcripts with manual deletion option.*
 
 ## Future Considerations
 
