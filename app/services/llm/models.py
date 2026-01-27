@@ -49,6 +49,13 @@ TASK_MODELS: dict[str, ModelConfig] = {
         temperature=0.0,
         max_tokens=500,
     ),
+    # Language cue detection - cost-effective classification
+    "cue_detection": ModelConfig(
+        primary="openai/gpt-4o-mini",  # Cost-effective for classification per spec
+        fallback="anthropic/claude-sonnet-4-20250514",
+        temperature=0.0,  # Deterministic
+        max_tokens=500,
+    ),
 }
 
 

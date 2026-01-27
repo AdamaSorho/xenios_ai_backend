@@ -4,6 +4,11 @@ from app.services.analytics.coaching_style import (
     CoachingStyleAnalyzer,
     CoachingStyleMetrics,
 )
+from app.services.analytics.cue_detection import (
+    CueDetectionError,
+    CueDetectionService,
+    get_cue_detection_service,
+)
 from app.services.analytics.engagement import (
     calculate_engagement_score,
     calculate_response_elaboration_score,
@@ -26,6 +31,10 @@ __all__ = [
     # Coaching style
     "CoachingStyleAnalyzer",
     "CoachingStyleMetrics",
+    # Cue detection
+    "CueDetectionError",
+    "CueDetectionService",
+    "get_cue_detection_service",
     # Engagement
     "calculate_engagement_score",
     "calculate_response_elaboration_score",
