@@ -126,7 +126,7 @@ Analytics enables:
 │  GET /api/v1/analytics/risk/alerts                              │
 │       → All at-risk clients for coach                           │
 │                                                                 │
-│  POST /api/v1/analytics/risk/acknowledge/{alert_id}             │
+│  POST /api/v1/analytics/risk/alerts/{alert_id}/acknowledge      │
 │       → Mark alert as reviewed                                  │
 │                                                                 │
 │  Celery Workers:                                                │
@@ -192,7 +192,7 @@ class SessionAnalytics(BaseModel):
 
     # Engagement
     engagement_score: float  # 0-100 composite
-    response_elaboration_score: float  # How detailed are client responses
+    response_elaboration_score: float  # Average words per client utterance (0-100 scale, see formula)
 
     # Metadata
     computed_at: datetime
@@ -514,6 +514,75 @@ def calculate_trend(
 # the interpretation is inverted by the caller.
 ```
 
+#### Coaching Style Metrics
+
+These metrics are derived from coach utterances using simple heuristics:
+
+```python
+def compute_coaching_style_metrics(coach_utterances: list[Utterance]) -> CoachingStyleMetrics:
+    """
+    Compute question/statement counts from coach utterances.
+
+    Heuristics (pattern-based, no LLM required):
+    - Question: Ends with '?' OR starts with question word
+    - Statement: Everything else
+    - Open question: Starts with "what", "how", "why", "tell me"
+    - Closed question: Starts with "do", "did", "is", "are", "can", "will"
+    """
+    QUESTION_STARTERS = {"what", "how", "why", "where", "when", "who", "which"}
+    OPEN_STARTERS = {"what", "how", "why", "tell"}
+    CLOSED_STARTERS = {"do", "did", "is", "are", "can", "could", "will", "would", "have", "has"}
+
+    question_count = 0
+    statement_count = 0
+    open_question_count = 0
+    closed_question_count = 0
+
+    for utterance in coach_utterances:
+        text = utterance.text.strip().lower()
+        first_word = text.split()[0] if text.split() else ""
+
+        is_question = text.endswith("?") or first_word in QUESTION_STARTERS
+
+        if is_question:
+            question_count += 1
+            if first_word in OPEN_STARTERS or text.startswith("tell me"):
+                open_question_count += 1
+            elif first_word in CLOSED_STARTERS:
+                closed_question_count += 1
+            # Note: Some questions don't fit either category (counted in question_count only)
+        else:
+            statement_count += 1
+
+    return CoachingStyleMetrics(
+        coach_question_count=question_count,
+        coach_statement_count=statement_count,
+        question_to_statement_ratio=question_count / max(statement_count, 1),
+        open_question_count=open_question_count,
+        closed_question_count=closed_question_count,
+    )
+
+
+def compute_response_elaboration_score(client_utterances: list[Utterance]) -> float:
+    """
+    Compute response elaboration score (0-100).
+
+    Based on average words per client utterance:
+    - 0-10 words: Low elaboration (0-33 score)
+    - 10-20 words: Medium elaboration (33-66 score)
+    - 20-30+ words: High elaboration (66-100 score)
+
+    Score = min(100, (avg_words / 30) * 100)
+    """
+    if not client_utterances:
+        return 0.0
+
+    total_words = sum(len(u.text.split()) for u in client_utterances)
+    avg_words = total_words / len(client_utterances)
+
+    return min(100.0, (avg_words / 30) * 100)
+```
+
 #### Risk Score Normalization
 
 Each risk factor contributes a portion of its weight based on severity:
@@ -596,8 +665,14 @@ GET /api/v1/analytics/clients/{client_id}/summary
   Response:
     - client_analytics: ClientAnalytics
     - session_count: int
-    - latest_session_date: date
-    - risk_level: string
+    - latest_session_date: date | null  # Null if no sessions
+    - risk_level: string | null  # Null if no valid risk score (expired or never computed)
+    - risk_score_stale: bool  # True if risk score is older than 7 days
+    - quality_warnings: list[string]  # e.g., ["low_confidence_diarization", "insufficient_sessions"]
+  Notes:
+    - If no sessions exist, returns analytics with zeroed metrics
+    - risk_level is null if: (a) no risk score computed, (b) risk score expired (valid_until < now)
+    - quality_warnings helps coach understand data reliability
 
 GET /api/v1/analytics/clients/{client_id}/sessions
   Query params:
