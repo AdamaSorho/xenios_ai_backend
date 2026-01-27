@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from app.api.v1.analytics import router as analytics_router
 from app.api.v1.chat import router as chat_router
 from app.api.v1.embeddings import router as embeddings_router
 from app.api.v1.extraction import router as extraction_router
@@ -28,3 +29,6 @@ router.include_router(transcription_router)
 router.include_router(embeddings_router)
 router.include_router(chat_router)
 router.include_router(insights_router)
+
+# Analytics endpoints (Spec 0005)
+router.include_router(analytics_router)

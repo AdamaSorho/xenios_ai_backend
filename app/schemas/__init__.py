@@ -1,5 +1,36 @@
 """Pydantic schemas for API request/response validation."""
 
+from app.schemas.analytics import (
+    AcknowledgeAlertRequest,
+    AlertListResponse,
+    AlertSeverity,
+    AlertStatus,
+    AlertType,
+    ClientAnalyticsResponse,
+    ClientAnalyticsSummaryResponse,
+    CoachSummaryResponse,
+    ComputeResponse,
+    CueType,
+    DataPoint,
+    LanguageCueResponse,
+    QualityWarning,
+    RiskAlertResponse,
+    RiskDistribution,
+    RiskFactorResponse,
+    RiskLevel,
+    RiskScoreDetailResponse,
+    RiskScoreHistory,
+    RiskScoreResponse,
+    SessionAnalyticsDetailResponse,
+    SessionAnalyticsResponse,
+    SessionAnalyticsSummary,
+    SessionComparison,
+    SessionListResponse,
+    TrendData,
+    TrendDirection,
+    TrendsResponse,
+    WindowType,
+)
 from app.schemas.common import ServiceStatus
 from app.schemas.extraction import (
     DocumentType,
@@ -27,6 +58,36 @@ from app.schemas.rag import (
 )
 
 __all__ = [
+    # Analytics (Spec 0005)
+    "AcknowledgeAlertRequest",
+    "AlertListResponse",
+    "AlertSeverity",
+    "AlertStatus",
+    "AlertType",
+    "ClientAnalyticsResponse",
+    "ClientAnalyticsSummaryResponse",
+    "CoachSummaryResponse",
+    "ComputeResponse",
+    "CueType",
+    "DataPoint",
+    "LanguageCueResponse",
+    "QualityWarning",
+    "RiskAlertResponse",
+    "RiskDistribution",
+    "RiskFactorResponse",
+    "RiskLevel",
+    "RiskScoreDetailResponse",
+    "RiskScoreHistory",
+    "RiskScoreResponse",
+    "SessionAnalyticsDetailResponse",
+    "SessionAnalyticsResponse",
+    "SessionAnalyticsSummary",
+    "SessionComparison",
+    "SessionListResponse",
+    "TrendData",
+    "TrendDirection",
+    "TrendsResponse",
+    "WindowType",
     # Common
     "ServiceStatus",
     # Extraction

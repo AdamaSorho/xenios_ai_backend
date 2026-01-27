@@ -212,6 +212,11 @@ def process_transcription(self, job_id: str) -> dict[str, Any]:
             # 10. Update status to completed
             run_async(_update_status(conn, UUID(job_id), "completed", progress=100))
 
+            # 11. Trigger session analytics computation (Spec 0005)
+            from app.workers.tasks.analytics import compute_session_analytics
+            compute_session_analytics.delay(job_id)
+            logger.info("Triggered session analytics computation", job_id=job_id)
+
         except SummarizationError as e:
             # Summary failed but transcript is available
             logger.warning(
@@ -234,7 +239,12 @@ def process_transcription(self, job_id: str) -> dict[str, Any]:
                 )
             )
 
-        # 11. Send webhook notification
+            # Trigger analytics even for partial (transcript available)
+            from app.workers.tasks.analytics import compute_session_analytics
+            compute_session_analytics.delay(job_id)
+            logger.info("Triggered session analytics for partial job", job_id=job_id)
+
+        # 12. Send webhook notification
         if job["webhook_url"]:
             run_async(
                 _send_webhook(
