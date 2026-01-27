@@ -48,38 +48,54 @@ class TestReadinessEndpoint:
         response = client.get("/health/ready")
         assert response.status_code == 200
 
-    def test_readiness_returns_503_when_db_unhealthy(self, client, mock_redis, mock_settings):
+    def test_readiness_returns_503_when_db_unhealthy(self):
         """Test that /health/ready returns 503 when database is unhealthy."""
-        from unittest.mock import patch
+        from unittest.mock import AsyncMock, patch
 
-        with patch("app.core.database.check_db_health", return_value=False):
-            # Need to recreate app with new mock
-            from fastapi.testclient import TestClient
+        from fastapi.testclient import TestClient
 
-            from app.main import create_app
+        from app.main import create_app
 
-            app = create_app()
-            with TestClient(app) as test_client:
-                response = test_client.get("/health/ready")
-                assert response.status_code == 503
-                assert response.json()["status"] == "not ready"
-                assert response.json()["checks"]["database"] == "failed"
+        # Patch at the import location (where it's used in health.py)
+        with patch(
+            "app.api.health.check_db_health",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            with patch(
+                "app.api.health.check_redis_health",
+                new_callable=AsyncMock,
+                return_value=True,
+            ):
+                app = create_app()
+                with TestClient(app) as test_client:
+                    response = test_client.get("/health/ready")
+                    assert response.status_code == 503
+                    assert response.json()["status"] == "not ready"
+                    assert response.json()["checks"]["database"] == "failed"
 
-    def test_readiness_returns_503_when_redis_unhealthy(
-        self, client, mock_database, mock_settings
-    ):
+    def test_readiness_returns_503_when_redis_unhealthy(self):
         """Test that /health/ready returns 503 when Redis is unhealthy."""
-        from unittest.mock import patch
+        from unittest.mock import AsyncMock, patch
 
-        with patch("app.core.redis.check_redis_health", return_value=False):
-            # Need to recreate app with new mock
-            from fastapi.testclient import TestClient
+        from fastapi.testclient import TestClient
 
-            from app.main import create_app
+        from app.main import create_app
 
-            app = create_app()
-            with TestClient(app) as test_client:
-                response = test_client.get("/health/ready")
-                assert response.status_code == 503
-                assert response.json()["status"] == "not ready"
-                assert response.json()["checks"]["redis"] == "failed"
+        # Patch at the import location (where it's used in health.py)
+        with patch(
+            "app.api.health.check_db_health",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            with patch(
+                "app.api.health.check_redis_health",
+                new_callable=AsyncMock,
+                return_value=False,
+            ):
+                app = create_app()
+                with TestClient(app) as test_client:
+                    response = test_client.get("/health/ready")
+                    assert response.status_code == 503
+                    assert response.json()["status"] == "not ready"
+                    assert response.json()["checks"]["redis"] == "failed"

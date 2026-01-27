@@ -8,13 +8,14 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
-# Set test environment variables before importing app
-os.environ.setdefault("ENVIRONMENT", "development")
-os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
-os.environ.setdefault("SUPABASE_JWT_SECRET", "test-jwt-secret-at-least-32-chars-long")
-os.environ.setdefault("XENIOS_BACKEND_API_KEY", "test-api-key")
-os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-key")
+# Set test environment variables BEFORE any app imports
+os.environ["ENVIRONMENT"] = "development"
+os.environ["DEBUG"] = "true"
+os.environ["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test"
+os.environ["REDIS_URL"] = "redis://localhost:6379/0"
+os.environ["SUPABASE_JWT_SECRET"] = "test-jwt-secret-at-least-32-chars-long"
+os.environ["XENIOS_BACKEND_API_KEY"] = "test-api-key"
+os.environ["OPENROUTER_API_KEY"] = "test-openrouter-key"
 
 
 @pytest.fixture(scope="session")
@@ -24,12 +25,23 @@ def test_settings():
 
     return Settings(
         environment="development",
+        debug=True,
         database_url="postgresql://test:test@localhost:5432/test",
         redis_url="redis://localhost:6379/0",
         supabase_jwt_secret="test-jwt-secret-at-least-32-chars-long",
         xenios_backend_api_key="test-api-key",
         openrouter_api_key="test-openrouter-key",
     )
+
+
+@pytest.fixture(autouse=True)
+def reset_settings_cache():
+    """Reset settings cache before each test."""
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture
@@ -48,21 +60,21 @@ def mock_redis():
     mock.set = AsyncMock(return_value=True)
     mock.close = AsyncMock()
 
-    with patch("app.core.redis.get_redis", return_value=mock):
-        with patch("app.core.redis.check_redis_health", return_value=True):
+    with patch("app.core.redis.get_redis", new_callable=AsyncMock, return_value=mock):
+        with patch("app.core.redis.check_redis_health", new_callable=AsyncMock, return_value=True):
             yield mock
 
 
 @pytest.fixture
 def mock_database():
     """Mock database connection."""
-    with patch("app.core.database.check_db_health", return_value=True):
+    with patch("app.core.database.check_db_health", new_callable=AsyncMock, return_value=True):
         with patch("app.core.database.get_pool", new_callable=AsyncMock):
             yield
 
 
 @pytest.fixture
-def app(mock_settings, mock_redis, mock_database):
+def app(mock_redis, mock_database):
     """Create test application instance."""
     from app.main import create_app
 
@@ -72,15 +84,15 @@ def app(mock_settings, mock_redis, mock_database):
 @pytest.fixture
 def client(app) -> Generator[TestClient, None, None]:
     """Create test client."""
-    with TestClient(app) as client:
-        yield client
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 @pytest.fixture
 async def async_client(app) -> AsyncIterator[AsyncClient]:
     """Create async test client."""
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        yield client
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        yield ac
 
 
 @pytest.fixture
