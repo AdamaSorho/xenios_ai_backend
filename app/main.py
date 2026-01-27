@@ -11,6 +11,7 @@ from app.api.router import api_router
 from app.config import get_settings
 from app.core.logging import setup_logging
 from app.middleware.audit_log import AuditLogMiddleware
+from app.middleware.auth_state import AuthStateMiddleware
 from app.middleware.correlation import CorrelationIdMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 
@@ -40,8 +41,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Add middleware (order matters - first added = last executed)
-    # Execution order: CORS -> Correlation -> RateLimit -> AuditLog -> Request
+    # Add middleware (order matters - first added = outermost wrapper)
+    # Execution order: CORS -> Correlation -> AuthState -> RateLimit -> AuditLog -> Request
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
@@ -50,6 +51,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(CorrelationIdMiddleware)
+    app.add_middleware(AuthStateMiddleware)  # Extract user_id from JWT for downstream middleware
     app.add_middleware(RateLimitMiddleware)  # Rate limit before audit (Spec 0004)
     app.add_middleware(AuditLogMiddleware)  # Audit logging (Spec 0004)
 
