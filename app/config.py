@@ -35,6 +35,17 @@ class Settings(BaseSettings):
     # External Services (for future specs)
     deepgram_api_key: str = ""
 
+    # S3/R2 Storage (Spec 0002: Document Extraction)
+    s3_endpoint_url: str = ""  # For R2 or S3-compatible services
+    s3_bucket: str = "xenios-extractions"
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    s3_region: str = "auto"
+
+    # Extraction settings
+    extraction_max_file_size_mb: int = 50
+    extraction_webhook_url: str = ""  # Optional webhook for completion notifications
+
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     sentry_dsn: str = ""
