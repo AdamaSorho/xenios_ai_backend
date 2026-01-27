@@ -138,15 +138,15 @@ projects:
   - id: "0003"
     title: "Transcription & Session Processing"
     summary: "Deepgram integration, speaker diarization, intent classification, and session summarization"
-    status: conceived
+    status: specified
     priority: high
     files:
       spec: codev/specs/0003-transcription-session-processing.md
-      plan: null
+      plan: codev/plans/0003-transcription-session-processing.md
       review: null
     dependencies: ["0001", "0002"]
     tags: [features, transcription, ai]
-    notes: "Depends on foundation and extraction (S3 reuse); PRD Weeks 3-4"
+    notes: "Spec approved 2025-01-27. Plan created."
 
   - id: "0004"
     title: "RAG Chat & Insights"
