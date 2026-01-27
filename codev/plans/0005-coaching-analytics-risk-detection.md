@@ -400,15 +400,59 @@ class RiskAlert(Base):
 **File**: `app/schemas/analytics.py`
 
 Define request/response schemas matching the spec:
-- `SessionAnalyticsResponse`
-- `SessionAnalyticsSummary`
-- `LanguageCueResponse`
-- `ClientAnalyticsResponse`
-- `RiskScoreResponse`
-- `RiskFactorResponse`
-- `RiskAlertResponse`
-- `TrendData`, `DataPoint`
-- `SessionComparison`
+- `SessionAnalyticsResponse` - Full session analytics with cues
+- `SessionAnalyticsSummary` - Compact view for list endpoints
+- `LanguageCueResponse` - Individual cue with context
+- `ClientAnalyticsResponse` - Aggregate client analytics
+- `RiskScoreResponse` - Risk score with factors
+- `RiskFactorResponse` - Individual risk factor detail
+- `RiskAlertResponse` - Alert with status
+- `TrendData`, `DataPoint` - Trend visualization data
+- `SessionComparison` - Compare current vs previous session
+- `RiskScoreHistory` - Historical risk score entry for trend display
+- `ClientAnalyticsSummaryResponse` - Summary endpoint response with quality_warnings
+- `AcknowledgeAlertRequest` - Request body for alert acknowledgment
+
+**Key schema implementations:**
+
+```python
+from pydantic import BaseModel
+from uuid import UUID
+from datetime import date, datetime
+from typing import Optional
+
+class RiskScoreHistory(BaseModel):
+    """Historical risk score for trend display."""
+    computed_at: datetime
+    risk_score: float
+    risk_level: str
+    top_factor: str  # Primary contributing factor
+
+class RiskScoreDetailResponse(BaseModel):
+    """GET /clients/{id}/risk response."""
+    risk_score: RiskScoreResponse
+    history: list[RiskScoreHistory]  # Last 5 scores
+    alerts: list[RiskAlertResponse]  # Active alerts for this client
+
+class ClientAnalyticsSummaryResponse(BaseModel):
+    """GET /clients/{id}/summary response."""
+    client_analytics: ClientAnalyticsResponse
+    session_count: int
+    latest_session_date: date | None
+    risk_level: str | None  # Null if no valid risk score
+    risk_score_stale: bool  # True if risk score > 7 days old
+    quality_warnings: list[str]  # e.g., ["low_confidence_diarization"]
+```
+
+**Query for risk score history:**
+```sql
+SELECT computed_at, risk_score, risk_level,
+       (factors->0->>'factor_type') as top_factor
+FROM ai_backend.risk_scores
+WHERE client_id = :client_id
+ORDER BY computed_at DESC
+LIMIT 5
+```
 
 ### 1.4 Update model exports
 
@@ -1159,8 +1203,44 @@ def compute_risk_scores_batch():
 
 
 @celery_app.task
+def generate_risk_alerts():
+    """
+    Generate alerts for high-risk clients.
+    Scheduled via Celery Beat at 3:30 AM (after risk scores).
+
+    Checks for:
+    - New high/critical risk level
+    - Significant risk increase (>20 points)
+    - No session in 30+ days
+    """
+    # 1. Get all recent risk scores (computed today)
+    # 2. For each score, check alert conditions
+    # 3. Create RiskAlert records as needed
+    # 4. Avoid duplicate alerts (check existing pending alerts)
+    pass
+
+
+@celery_app.task
 def cleanup_expired_risk_scores():
-    """Delete risk scores past valid_until. Runs daily."""
+    """Delete risk scores past valid_until. Runs daily at 4 AM."""
+    # DELETE FROM ai_backend.risk_scores WHERE valid_until < NOW()
+    pass
+
+
+@celery_app.task
+def archive_old_analytics():
+    """
+    Archive/delete analytics older than retention period. Runs monthly.
+
+    Retention per spec:
+    - Session Analytics: 2 years (cascade deletes cues)
+    - Client Analytics: 1 year
+    - Risk Scores: 90 days (handled by cleanup_expired_risk_scores)
+    - Risk Alerts: 1 year (archive resolved alerts)
+    """
+    # 1. Delete session_analytics older than 2 years
+    # 2. Delete client_analytics windows older than 1 year
+    # 3. Archive/delete risk_alerts older than 1 year
     pass
 ```
 
@@ -1181,9 +1261,17 @@ celery_app.conf.beat_schedule = {
         "task": "app.workers.tasks.analytics.compute_risk_scores_batch",
         "schedule": crontab(hour=3, minute=0),
     },
+    "generate-risk-alerts-daily": {
+        "task": "app.workers.tasks.analytics.generate_risk_alerts",
+        "schedule": crontab(hour=3, minute=30),
+    },
     "cleanup-expired-risk-scores": {
         "task": "app.workers.tasks.analytics.cleanup_expired_risk_scores",
         "schedule": crontab(hour=4, minute=0),
+    },
+    "archive-old-analytics-monthly": {
+        "task": "app.workers.tasks.analytics.archive_old_analytics",
+        "schedule": crontab(day_of_month=1, hour=5, minute=0),  # 1st of each month
     },
 }
 ```
