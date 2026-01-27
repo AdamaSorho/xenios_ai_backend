@@ -1,0 +1,10 @@
+Test Name,Result,Unit,Reference Range,Flag
+Total Cholesterol,195,mg/dL,<200,
+LDL Cholesterol,118,mg/dL,<100,High
+HDL Cholesterol,55,mg/dL,>40,
+Triglycerides,110,mg/dL,<150,
+Glucose,92,mg/dL,70-100,
+Hemoglobin A1c,5.4,%,<5.7,
+TSH,2.1,mIU/L,0.4-4.0,
+Vitamin D,42,ng/mL,30-100,
+Testosterone,650,ng/dL,300-1000,

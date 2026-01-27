@@ -16,6 +16,12 @@ os.environ["REDIS_URL"] = "redis://localhost:6379/0"
 os.environ["SUPABASE_JWT_SECRET"] = "test-jwt-secret-at-least-32-chars-long"
 os.environ["XENIOS_BACKEND_API_KEY"] = "test-api-key"
 os.environ["OPENROUTER_API_KEY"] = "test-openrouter-key"
+# S3 settings for extraction tests
+os.environ["S3_ENDPOINT_URL"] = ""
+os.environ["S3_BUCKET"] = "test-bucket"
+os.environ["S3_ACCESS_KEY_ID"] = "test-key"
+os.environ["S3_SECRET_ACCESS_KEY"] = "test-secret"
+os.environ["S3_REGION"] = "us-east-1"
 
 
 @pytest.fixture(scope="session")

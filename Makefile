@@ -75,6 +75,18 @@ install-dev:
 	uv sync --dev
 
 # ============================================================================
+# Extraction (Spec 0002)
+# ============================================================================
+
+# Run extraction tests only
+test-extraction:
+	uv run pytest tests/test_extraction_*.py tests/test_*extractor*.py tests/test_wearable*.py tests/test_lab*.py -v
+
+# Start extraction worker only
+worker-extraction:
+	docker compose -f docker/docker-compose.yml up -d worker-extraction
+
+# ============================================================================
 # Docker
 # ============================================================================
 
