@@ -1,0 +1,29 @@
+# Production environment variables
+# This file MUST be encrypted with ansible-vault before committing
+# Run: ansible-vault encrypt inventory/group_vars/production.yml
+---
+# Environment
+environment: production
+debug: "false"
+
+# Domain
+domain: ai.xenios.app
+cors_origins: "https://xenios.app,https://www.xenios.app"
+
+# Docker image
+image_tag: "{{ lookup('env', 'IMAGE_TAG') | default('latest') }}"
+
+# Database (Supabase)
+# IMPORTANT: Replace these with actual values and encrypt this file
+database_url: "{{ vault_database_url }}"
+supabase_jwt_secret: "{{ vault_supabase_jwt_secret }}"
+
+# API Keys
+# IMPORTANT: Replace these with actual values and encrypt this file
+xenios_backend_api_key: "{{ vault_xenios_backend_api_key }}"
+openrouter_api_key: "{{ vault_openrouter_api_key }}"
+deepgram_api_key: "{{ vault_deepgram_api_key | default('') }}"
+
+# Flower dashboard
+flower_user: admin
+flower_password: "{{ vault_flower_password }}"

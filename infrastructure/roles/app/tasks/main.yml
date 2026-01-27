@@ -1,0 +1,90 @@
+# App role - Deploy the application
+---
+- name: Create application directory
+  file:
+    path: "{{ app_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+
+- name: Create backup directory
+  file:
+    path: "{{ app_dir }}/backups"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+
+- name: Check if docker-compose.yml exists (for backup)
+  stat:
+    path: "{{ app_dir }}/docker-compose.yml"
+  register: existing_compose
+
+- name: Backup existing docker-compose.yml
+  copy:
+    src: "{{ app_dir }}/docker-compose.yml"
+    dest: "{{ app_dir }}/backups/docker-compose.yml.bak"
+    remote_src: yes
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0644'
+  when: existing_compose.stat.exists
+
+- name: Backup existing .env file
+  copy:
+    src: "{{ app_dir }}/.env"
+    dest: "{{ app_dir }}/backups/.env.bak"
+    remote_src: yes
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0600'
+  when: existing_compose.stat.exists
+  ignore_errors: yes
+
+- name: Copy docker-compose file
+  template:
+    src: docker-compose.prod.yml.j2
+    dest: "{{ app_dir }}/docker-compose.yml"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0644'
+  notify: Restart application
+
+- name: Copy environment file
+  template:
+    src: .env.j2
+    dest: "{{ app_dir }}/.env"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0600'
+  no_log: true
+  notify: Restart application
+
+- name: Pull latest images
+  community.docker.docker_compose_v2:
+    project_src: "{{ app_dir }}"
+    pull: always
+    state: present
+  register: pull_result
+
+- name: Start application
+  community.docker.docker_compose_v2:
+    project_src: "{{ app_dir }}"
+    state: present
+  register: compose_result
+
+- name: Wait for health check
+  uri:
+    url: "http://localhost:8000/health"
+    status_code: 200
+  register: health_check
+  until: health_check.status == 200
+  retries: 30
+  delay: 2
+
+- name: Prune old Docker images
+  community.docker.docker_prune:
+    images: yes
+    images_filters:
+      dangling: true

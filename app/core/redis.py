@@ -1,6 +1,6 @@
 """Redis connection and utilities."""
 
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import redis.asyncio as redis
 from redis.asyncio import Redis
