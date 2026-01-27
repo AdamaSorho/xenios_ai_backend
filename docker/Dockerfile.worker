@@ -1,0 +1,31 @@
+# Xenios AI Backend - Celery Worker Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+# Including dependencies for future document extraction (Docling)
+RUN apt-get update && apt-get install -y \
+    curl \
+    libmagic1 \
+    poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv package manager
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Copy dependency files first (for better caching)
+COPY pyproject.toml uv.lock* ./
+
+# Install dependencies (production only)
+RUN uv sync --frozen --no-dev --no-editable
+
+# Copy application code
+COPY app/ ./app/
+
+# Create non-root user for security
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+# Default command (can be overridden in docker-compose)
+CMD ["uv", "run", "celery", "-A", "app.workers.celery_app", "worker", "-l", "info"]

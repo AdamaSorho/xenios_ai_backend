@@ -1,0 +1,29 @@
+# Staging environment variables
+# This file should be encrypted with ansible-vault in production
+# Run: ansible-vault encrypt inventory/group_vars/staging.yml
+---
+# Environment
+environment: staging
+debug: "false"
+
+# Domain
+domain: staging.ai.xenios.app
+cors_origins: "https://staging.xenios.app,http://localhost:3000"
+
+# Docker image
+image_tag: "{{ lookup('env', 'IMAGE_TAG') | default('latest') }}"
+
+# Database (Supabase)
+# IMPORTANT: Replace these with actual values and encrypt this file
+database_url: "{{ vault_database_url | default('postgresql://postgres:password@db.xxx.supabase.co:5432/postgres') }}"
+supabase_jwt_secret: "{{ vault_supabase_jwt_secret | default('your-jwt-secret-here') }}"
+
+# API Keys
+# IMPORTANT: Replace these with actual values and encrypt this file
+xenios_backend_api_key: "{{ vault_xenios_backend_api_key | default('staging-api-key-change-me') }}"
+openrouter_api_key: "{{ vault_openrouter_api_key | default('sk-or-staging-key') }}"
+deepgram_api_key: "{{ vault_deepgram_api_key | default('') }}"
+
+# Flower dashboard
+flower_user: admin
+flower_password: "{{ vault_flower_password | default('staging-flower-password') }}"

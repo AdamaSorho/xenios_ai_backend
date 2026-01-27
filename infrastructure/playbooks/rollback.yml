@@ -1,0 +1,75 @@
+# Rollback playbook - Restore previous version
+# Run: make rollback ENV=staging
+---
+- name: Rollback AI Backend Application
+  hosts: all
+  become: yes
+  become_user: "{{ deploy_user }}"
+
+  vars:
+    app_dir: /opt/xenios-ai-backend
+    backup_dir: /opt/xenios-ai-backend/backups
+
+  tasks:
+    - name: Check for backup files
+      stat:
+        path: "{{ backup_dir }}/docker-compose.yml.bak"
+      register: backup_check
+
+    - name: Fail if no backup exists
+      fail:
+        msg: "No backup found at {{ backup_dir }}/docker-compose.yml.bak. Cannot rollback."
+      when: not backup_check.stat.exists
+
+    - name: Stop current containers
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_dir }}"
+        state: absent
+      ignore_errors: yes
+
+    - name: Restore docker-compose.yml from backup
+      copy:
+        src: "{{ backup_dir }}/docker-compose.yml.bak"
+        dest: "{{ app_dir }}/docker-compose.yml"
+        remote_src: yes
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: '0644'
+
+    - name: Restore .env from backup
+      copy:
+        src: "{{ backup_dir }}/.env.bak"
+        dest: "{{ app_dir }}/.env"
+        remote_src: yes
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: '0600'
+      when: backup_check.stat.exists
+
+    - name: Pull images from backup compose file
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_dir }}"
+        pull: always
+        state: present
+
+    - name: Start containers with backup version
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_dir }}"
+        state: present
+
+    - name: Wait for health check
+      uri:
+        url: "http://localhost:8000/health"
+        status_code: 200
+      register: health_check
+      until: health_check.status == 200
+      retries: 30
+      delay: 2
+
+    - name: Display rollback status
+      debug:
+        msg: |
+          Rollback complete!
+
+          The application has been restored to the previous version.
+          Health check: https://{{ domain }}/health

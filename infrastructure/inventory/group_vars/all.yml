@@ -1,0 +1,25 @@
+# Common variables for all environments
+---
+# Application
+app_name: xenios-ai-backend
+app_dir: /opt/xenios-ai-backend
+docker_registry: ghcr.io/xenios
+
+# Users
+deploy_user: deploy
+deploy_group: deploy
+
+# SSH
+ssh_port: 22
+
+# Docker
+docker_compose_version: "2.24.0"
+
+# Redis (local, no authentication for MVP)
+redis_url: "redis://redis:6379/0"
+
+# Log level
+log_level: INFO
+
+# Timezone
+timezone: UTC

@@ -1,0 +1,38 @@
+# Deploy playbook - Application deployment
+# Run: make deploy ENV=staging
+---
+- name: Deploy AI Backend Application
+  hosts: all
+  become: yes
+  become_user: "{{ deploy_user }}"
+
+  vars:
+    app_dir: /opt/xenios-ai-backend
+
+  pre_tasks:
+    - name: Validate required variables
+      assert:
+        that:
+          - database_url is defined
+          - supabase_jwt_secret is defined
+          - xenios_backend_api_key is defined
+          - openrouter_api_key is defined
+        fail_msg: "Required secrets are not defined. Check your group_vars file."
+      tags: [always]
+
+  roles:
+    - role: app
+      tags: [app, deploy]
+
+  post_tasks:
+    - name: Display deployment info
+      debug:
+        msg: |
+          Deployment complete!
+
+          Service URL: https://{{ domain }}
+          Health check: https://{{ domain }}/health
+          Flower: https://flower.{{ domain }} (user: {{ flower_user }})
+
+          To view logs: ssh {{ deploy_user }}@{{ ansible_host }} "docker compose -f {{ app_dir }}/docker-compose.yml logs -f"
+      tags: [always]

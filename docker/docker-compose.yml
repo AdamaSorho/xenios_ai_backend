@@ -1,0 +1,110 @@
+# Docker Compose for local development
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=${DATABASE_URL}
+      - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
+      - XENIOS_BACKEND_API_KEY=${XENIOS_BACKEND_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - CORS_ORIGINS=http://localhost:3000
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ../app:/app/app
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    command: uv run celery -A app.workers.celery_app worker -l info -Q default,llm -c 4
+    environment:
+      - ENVIRONMENT=development
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=${DATABASE_URL}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ../app:/app/app
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  extraction-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    command: uv run celery -A app.workers.celery_app worker -l info -Q extraction -c 2
+    environment:
+      - ENVIRONMENT=development
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=${DATABASE_URL}
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ../app:/app/app
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  transcription-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    command: uv run celery -A app.workers.celery_app worker -l info -Q transcription -c 3
+    environment:
+      - ENVIRONMENT=development
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=${DATABASE_URL}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ../app:/app/app
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  flower:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    command: uv run celery -A app.workers.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - worker
+
+volumes:
+  redis_data:

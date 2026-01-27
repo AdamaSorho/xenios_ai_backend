@@ -1,0 +1,41 @@
+# Provision playbook - Initial VPS setup
+# Run once per server: make provision ENV=staging
+---
+- name: Provision AI Backend Server
+  hosts: all
+  become: yes
+
+  vars:
+    deploy_user: deploy
+
+  pre_tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags: [always]
+
+  roles:
+    - role: common
+      tags: [common, always]
+
+    - role: firewall
+      tags: [firewall, security]
+
+    - role: docker
+      tags: [docker]
+
+    - role: caddy
+      tags: [caddy, proxy]
+
+  post_tasks:
+    - name: Display completion message
+      debug:
+        msg: |
+          Server provisioning complete!
+
+          Next steps:
+          1. Update DNS to point {{ domain }} to this server's IP
+          2. Run: make deploy ENV={{ environment }}
+          3. Caddy will automatically provision SSL certificate
+      tags: [always]
