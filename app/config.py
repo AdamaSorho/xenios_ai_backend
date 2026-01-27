@@ -32,8 +32,14 @@ class Settings(BaseSettings):
     # LLM Providers
     openrouter_api_key: str
 
-    # External Services (for future specs)
+    # External Services
     deepgram_api_key: str = ""
+
+    # Transcription settings (Spec 0003)
+    transcription_max_file_size_mb: int = 500
+    transcription_max_duration_minutes: int = 120
+    transcription_min_duration_seconds: int = 10
+    transcription_s3_bucket: str = "xenios-transcriptions"
 
     # S3/R2 Storage (Spec 0002: Document Extraction)
     s3_endpoint_url: str = ""  # For R2 or S3-compatible services
