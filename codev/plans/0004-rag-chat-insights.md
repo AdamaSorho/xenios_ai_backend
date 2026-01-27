@@ -16,6 +16,8 @@ Build the RAG system incrementally, starting with pgvector setup, then embedding
 - OpenAI client for embeddings (separate from Anthropic)
 - Test with sample data at each phase
 - Security and authorization from the start
+- Rate limiting via Redis sliding window middleware
+- Structured logging with PHI redaction
 
 ---
 
@@ -323,6 +325,18 @@ class EmbeddingService:
             updated += u
             skipped += s
 
+        # Health goals
+        if not source_types or EmbeddingSourceType.HEALTH_GOAL in source_types:
+            u, s = await self._update_health_goal_embeddings(client_id, force)
+            updated += u
+            skipped += s
+
+        # Message threads (daily aggregates)
+        if not source_types or EmbeddingSourceType.MESSAGE_THREAD in source_types:
+            u, s = await self._update_message_thread_embeddings(client_id, force)
+            updated += u
+            skipped += s
+
         return EmbeddingUpdateResult(updated_count=updated, skipped_count=skipped)
 
     async def _should_update(
@@ -474,6 +488,85 @@ class SearchResult(BaseModel):
 OPENAI_API_KEY: str = ""
 ```
 
+### 2.5 Create embeddings API endpoints
+
+**File**: `app/api/v1/embeddings.py`
+
+```python
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import UUID
+
+from app.database import get_db
+from app.core.auth import get_current_user, verify_coach_client_relationship
+from app.services.rag.embeddings import EmbeddingService
+from app.services.rag.retrieval import RetrievalService
+from app.schemas.rag import EmbeddingUpdateRequest, EmbeddingUpdateResult, EmbeddingSearchRequest
+
+router = APIRouter(prefix="/embeddings", tags=["embeddings"])
+
+@router.post("/update", response_model=EmbeddingUpdateResult)
+async def update_embeddings(
+    request: EmbeddingUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Update embeddings for a client."""
+    await verify_coach_client_relationship(
+        db, coach_id=current_user.id, client_id=request.client_id
+    )
+
+    service = EmbeddingService(db)
+    result = await service.update_client_embeddings(
+        client_id=request.client_id,
+        source_types=[request.source_type] if request.source_type else None,
+        force=request.force,
+    )
+    return result
+
+@router.post("/search", response_model=list[SearchResult])
+async def search_embeddings(
+    request: EmbeddingSearchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Search embeddings for a client."""
+    await verify_coach_client_relationship(
+        db, coach_id=current_user.id, client_id=request.client_id
+    )
+
+    service = RetrievalService(db)
+    results = await service.retrieve_context(
+        client_id=request.client_id,
+        query=request.query,
+        max_items=request.limit,
+        source_types=request.source_types,
+    )
+    return results
+```
+
+### 2.6 Create batch embedding endpoint for onboarding
+
+```python
+@router.post("/batch-update")
+async def batch_update_embeddings(
+    client_ids: list[UUID],
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Batch update embeddings for multiple clients (onboarding)."""
+    from app.workers.tasks.rag import update_client_embeddings
+
+    for client_id in client_ids:
+        await verify_coach_client_relationship(
+            db, coach_id=current_user.id, client_id=client_id
+        )
+        # Queue Celery task
+        update_client_embeddings.delay(str(client_id), force=True)
+
+    return {"queued": len(client_ids)}
+```
+
 ---
 
 ## Phase 3: Retrieval Service
@@ -608,13 +701,20 @@ class RetrievalService:
 
 **Goal**: Implement grounded chat with source citations.
 
-### 4.1 Create chat service
+### 4.1 Create chat service with context policy
 
 **File**: `app/services/rag/chat.py`
+
+Context policy from spec:
+- 10 items maximum, 4,000 tokens total context limit
+- Priority: health profile > recent session > relevant metrics > check-ins > lab results
+- Truncate oldest/lowest-relevance items if exceeds 4K tokens
+- Use `include_sources` flag from request
 
 ```python
 from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
+import tiktoken
 
 from app.services.rag.retrieval import RetrievalService
 from app.services.llm.client import LLMClient
@@ -750,10 +850,59 @@ Please acknowledge that you don't have enough specific information and suggest w
         avg_relevance = sum(c.relevance_score for c in contexts) / len(contexts)
         return min(avg_relevance, 1.0)
 
+    def _apply_context_policy(
+        self,
+        contexts: list,
+        max_items: int,
+        max_tokens: int = 4000,
+    ) -> list:
+        """Apply context window policy: priority ordering and token limits."""
+        # Priority order
+        priority_order = [
+            "health_profile",
+            "session_summary",
+            "health_metric_summary",
+            "checkin_summary",
+            "lab_result",
+            "health_goal",
+            "message_thread",
+        ]
+
+        # Sort by priority, then by relevance
+        def sort_key(ctx):
+            type_priority = priority_order.index(ctx.source_type) if ctx.source_type in priority_order else 99
+            return (type_priority, -ctx.relevance_score)
+
+        sorted_contexts = sorted(contexts, key=sort_key)
+
+        # Limit by items
+        limited = sorted_contexts[:max_items]
+
+        # Limit by tokens
+        encoder = tiktoken.encoding_for_model("gpt-4")
+        total_tokens = 0
+        result = []
+
+        for ctx in limited:
+            ctx_tokens = len(encoder.encode(ctx.content))
+            if total_tokens + ctx_tokens > max_tokens:
+                break
+            total_tokens += ctx_tokens
+            result.append(ctx)
+
+        return result
+
     async def _load_conversation_history(self, conversation_id: UUID, limit: int) -> list:
         """Load previous messages from conversation."""
-        # Query chat_history table
-        pass
+        from sqlalchemy import select
+        result = await self.db.execute(
+            select(ChatHistory)
+            .where(ChatHistory.conversation_id == conversation_id)
+            .order_by(ChatHistory.created_at.desc())
+            .limit(limit)
+        )
+        messages = result.scalars().all()
+        return list(reversed(messages))  # Oldest first
 
     async def _persist_chat_history(
         self,
@@ -814,7 +963,6 @@ async def chat_complete(
     current_user = Depends(get_current_user),
 ):
     """Generate grounded chat response."""
-    # Verify coach-client relationship
     await verify_coach_client_relationship(
         db, coach_id=current_user.id, client_id=request.client_id
     )
@@ -825,9 +973,45 @@ async def chat_complete(
         coach_id=current_user.id,
         message=request.message,
         conversation_id=request.conversation_id,
+        max_context_items=request.max_context_items,
+        include_sources=request.include_sources,
     )
 
     return response
+
+
+@router.post("/stream")
+async def chat_stream(
+    request: ChatRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Stream grounded chat response via SSE."""
+    from fastapi.responses import StreamingResponse
+    import json
+
+    await verify_coach_client_relationship(
+        db, coach_id=current_user.id, client_id=request.client_id
+    )
+
+    chat_service = ChatService(db)
+
+    async def generate():
+        try:
+            async for chunk in chat_service.generate_response_stream(
+                client_id=request.client_id,
+                coach_id=current_user.id,
+                message=request.message,
+                conversation_id=request.conversation_id,
+            ):
+                if chunk.type == "chunk":
+                    yield f"event: chunk\ndata: {json.dumps({'type': 'chunk', 'content': chunk.content})}\n\n"
+                elif chunk.type == "done":
+                    yield f"event: done\ndata: {json.dumps(chunk.dict())}\n\n"
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'type': 'error', 'code': 'GENERATION_FAILED', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 ```
 
 ### 4.3 Add chat schemas
@@ -1005,10 +1189,13 @@ Respond in JSON format:
             **insight_data,
         )
 
-    async def _check_rate_limits(self, client_id: UUID) -> None:
-        """Check if rate limits are exceeded."""
-        # Max 3 per client per week
-        week_ago = datetime.utcnow() - timedelta(days=7)
+    async def _check_rate_limits(self, client_id: UUID, trigger: InsightTrigger) -> None:
+        """Check all rate limit rules from spec."""
+        now = datetime.utcnow()
+        week_ago = now - timedelta(days=7)
+        day_ago = now - timedelta(days=1)
+
+        # Rule 1: Max 3 per client per week
         result = await self.db.execute(
             select(InsightGenerationLog).where(
                 and_(
@@ -1020,6 +1207,28 @@ Respond in JSON format:
         )
         if len(result.scalars().all()) >= 3:
             raise RateLimitExceededError("Max 3 insights per client per week")
+
+        # Rule 2: Max 1 insight per trigger type per day
+        result = await self.db.execute(
+            select(InsightGenerationLog).where(
+                and_(
+                    InsightGenerationLog.client_id == client_id,
+                    InsightGenerationLog.trigger == trigger.value,
+                    InsightGenerationLog.status == "generated",
+                    InsightGenerationLog.created_at >= day_ago,
+                )
+            )
+        )
+        if result.scalars().first():
+            raise RateLimitExceededError(f"Max 1 {trigger.value} insight per day")
+
+        # Rule 3: 48-hour cooldown after approval/rejection
+        # Check if last insight of same type was approved/rejected in last 48 hours
+        cooldown_ago = now - timedelta(hours=48)
+        # Note: This requires checking public.insights table status
+        # Query: SELECT FROM public.insights WHERE client_id = $1
+        #        AND insight_type = $2 AND status IN ('approved', 'rejected')
+        #        AND updated_at >= $3
 
     async def _is_duplicate_insight(
         self,
@@ -1189,6 +1398,186 @@ async def generate_insight(
         )
     except RateLimitExceededError as e:
         raise HTTPException(status_code=429, detail=str(e))
+
+
+@router.get("/pending", response_model=list[GeneratedInsight])
+async def get_pending_insights(
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Get pending insights for the coach to review."""
+    from sqlalchemy import text
+
+    # Query MVP insights table for pending insights belonging to this coach
+    query = text("""
+        SELECT id, client_id, coach_id, title, client_message, rationale,
+               suggested_actions, confidence_score, triggering_data,
+               insight_type, expires_at, created_at
+        FROM public.insights
+        WHERE coach_id = :coach_id
+        AND status = 'pending'
+        AND expires_at > NOW()
+        ORDER BY created_at DESC
+        LIMIT :limit
+    """)
+
+    result = await db.execute(query, {"coach_id": str(current_user.id), "limit": limit})
+    rows = result.fetchall()
+
+    return [
+        GeneratedInsight(
+            id=row.id,
+            client_id=row.client_id,
+            coach_id=row.coach_id,
+            title=row.title,
+            client_message=row.client_message,
+            rationale=row.rationale,
+            suggested_actions=row.suggested_actions,
+            confidence_score=row.confidence_score,
+            triggering_data=row.triggering_data,
+            insight_type=row.insight_type,
+            expires_at=row.expires_at,
+        )
+        for row in rows
+    ]
+```
+
+---
+
+## Phase 5.5: Rate Limiting & Logging Middleware
+
+**Goal**: Implement rate limiting and audit logging per spec AC8.
+
+### 5.5.1 Create rate limiting middleware
+
+**File**: `app/middleware/rate_limit.py`
+
+```python
+from fastapi import Request, HTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+import redis.asyncio as redis
+import time
+
+from app.core.config import settings
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Redis sliding window rate limiting."""
+
+    LIMITS = {
+        "/api/v1/chat/": {"requests": 100, "window": 3600},      # 100/hour
+        "/api/v1/embeddings/": {"requests": 10, "window": 3600}, # 10/hour
+        "/api/v1/insights/": {"requests": 50, "window": 86400},  # 50/day
+    }
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.redis = redis.from_url(settings.REDIS_URL)
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip for system/service keys
+        api_key = request.headers.get("X-API-Key")
+        if api_key == settings.SYSTEM_API_KEY:
+            return await call_next(request)
+
+        # Find matching limit
+        path = request.url.path
+        limit_config = None
+        for prefix, config in self.LIMITS.items():
+            if path.startswith(prefix):
+                limit_config = config
+                break
+
+        if not limit_config:
+            return await call_next(request)
+
+        # Get coach_id from JWT
+        coach_id = getattr(request.state, "user_id", "anonymous")
+
+        # Redis sliding window
+        key = f"ratelimit:{path.split('/')[3]}:{coach_id}:{int(time.time()) // limit_config['window']}"
+        current = await self.redis.incr(key)
+        await self.redis.expire(key, limit_config["window"])
+
+        if current > limit_config["requests"]:
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded",
+                headers={"Retry-After": str(limit_config["window"])}
+            )
+
+        return await call_next(request)
+```
+
+### 5.5.2 Create audit logging middleware
+
+**File**: `app/middleware/audit_log.py`
+
+```python
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
+import structlog
+import time
+
+logger = structlog.get_logger("audit")
+
+class AuditLogMiddleware(BaseHTTPMiddleware):
+    """Log all operations for compliance."""
+
+    # Fields allowed in logs (PHI redaction)
+    ALLOWED_FIELDS = ["client_id", "coach_id", "source_type", "operation", "status", "tokens_used"]
+
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
+
+        response = await call_next(request)
+
+        # Log audit entry
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        await logger.ainfo(
+            "api_request",
+            path=request.url.path,
+            method=request.method,
+            coach_id=getattr(request.state, "user_id", None),
+            client_id=request.query_params.get("client_id"),
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+        )
+
+        return response
+```
+
+### 5.5.3 Configure structured logging
+
+**File**: `app/core/logging.py`
+
+```python
+import structlog
+
+def configure_logging():
+    """Configure structured logging with PHI redaction."""
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            _redact_phi_processor,
+            structlog.processors.JSONRenderer()
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+    )
+
+def _redact_phi_processor(logger, method_name, event_dict):
+    """Redact PHI from log events."""
+    phi_fields = ["content", "message", "response", "embedding", "content_text"]
+    for field in phi_fields:
+        if field in event_dict:
+            event_dict[field] = "[REDACTED]"
+    return event_dict
 ```
 
 ---
@@ -1402,6 +1791,7 @@ async def test_invalid_client_returns_404():
 - `app/services/rag/openai_client.py`
 - `app/services/rag/embeddings.py`
 - `app/schemas/rag.py`
+- `app/api/v1/embeddings.py`
 
 ### Phase 3
 - `app/services/rag/retrieval.py`
@@ -1414,6 +1804,11 @@ async def test_invalid_client_returns_404():
 - `app/services/rag/insights.py`
 - `app/api/v1/insights.py`
 
+### Phase 5.5
+- `app/middleware/rate_limit.py`
+- `app/middleware/audit_log.py`
+- `app/core/logging.py`
+
 ### Phase 6
 - `app/workers/tasks/rag.py`
 - `tests/services/rag/test_embeddings.py`
@@ -1421,6 +1816,8 @@ async def test_invalid_client_returns_404():
 - `tests/services/rag/test_chat.py`
 - `tests/services/rag/test_insights.py`
 - `tests/api/v1/test_chat.py`
+- `tests/api/v1/test_rate_limiting.py`
+- `tests/api/v1/test_auth.py`
 
 ---
 
@@ -1429,15 +1826,17 @@ async def test_invalid_client_returns_404():
 ```
 Phase 1: Database Schema ────────────────► pgvector, tables, indexes
     ▼
-Phase 2: Embedding Service ──────────────► OpenAI client, content hashing, storage
+Phase 2: Embedding Service ──────────────► OpenAI client, content hashing, storage, API endpoints
     ▼
 Phase 3: Retrieval Service ──────────────► Vector search, threshold filtering
     ▼
-Phase 4: Chat Endpoints ─────────────────► Grounded chat, conversation history
+Phase 4: Chat Endpoints ─────────────────► Grounded chat, streaming, conversation history
     ▼
-Phase 5: Insight Generation ─────────────► MVP integration, deduplication
+Phase 5: Insight Generation ─────────────► MVP integration, deduplication, pending endpoint
     ▼
-Phase 6: Celery & Testing ───────────────► Background tasks, tests
+Phase 5.5: Middleware ───────────────────► Rate limiting, audit logging, PHI redaction
+    ▼
+Phase 6: Celery & Testing ───────────────► Background tasks, comprehensive tests
 ```
 
 ---
@@ -1457,6 +1856,10 @@ After each phase, verify:
 - [ ] Can generate embedding for sample text
 - [ ] Content hash deduplication works
 - [ ] Embeddings stored correctly
+- [ ] All source types implemented (profile, metrics, sessions, checkins, labs, goals, messages)
+- [ ] /embeddings/update endpoint works
+- [ ] /embeddings/search endpoint works
+- [ ] Batch update for onboarding works
 
 ### Phase 3
 - [ ] Vector search returns ranked results
@@ -1464,21 +1867,39 @@ After each phase, verify:
 - [ ] No-context case handled
 
 ### Phase 4
-- [ ] Chat endpoint returns grounded response
-- [ ] Sources included in response
+- [ ] /chat/complete endpoint returns grounded response
+- [ ] /chat/stream endpoint returns SSE stream
+- [ ] Sources included when include_sources=true
 - [ ] Conversation history persisted
 - [ ] has_context flag correct
+- [ ] Context policy applied (priority, 4K token limit)
+- [ ] max_context_items honored
 
 ### Phase 5
-- [ ] Insight generated and written to MVP table
-- [ ] Duplicate detection works
-- [ ] Rate limiting enforced
-- [ ] Generation log populated
+- [ ] /insights/generate creates insight in MVP table
+- [ ] /insights/pending returns coach's pending insights
+- [ ] Duplicate detection: same type in 7 days blocked
+- [ ] Duplicate detection: title similarity > 0.85 blocked
+- [ ] Rate limit: max 3 per client per week
+- [ ] Rate limit: max 1 per trigger type per day
+- [ ] Rate limit: 48-hour cooldown after approval/rejection
+- [ ] Generation log populated with all fields
+
+### Phase 5.5
+- [ ] Redis rate limiting middleware active
+- [ ] Rate limits: 100 chat/hr, 10 embed/hr, 50 insight/day
+- [ ] 429 response with Retry-After header
+- [ ] System API key bypasses rate limits
+- [ ] Audit logging captures all operations
+- [ ] PHI redacted from logs
 
 ### Phase 6
 - [ ] Celery tasks execute correctly
-- [ ] All tests pass
+- [ ] All unit tests pass
+- [ ] All integration tests pass
 - [ ] Auth tests verify coach-client relationship
+- [ ] Rate limit tests verify enforcement
+- [ ] Error scenario tests pass
 
 ---
 
