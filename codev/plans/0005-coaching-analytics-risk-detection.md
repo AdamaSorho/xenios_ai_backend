@@ -1152,6 +1152,191 @@ api_router.include_router(analytics_router)
 
 ---
 
+## Phase 6.5: Security, Privacy & Quality Warnings
+
+**Goal**: Add audit logging, rate limiting, PII protection, and quality warning logic.
+
+### 6.5.1 Audit Logging
+
+Analytics access must be logged for compliance. Reuse existing AuditLogMiddleware from Spec 0004.
+
+**Integration**: The `AuditLogMiddleware` from Spec 0004 already logs:
+- coach_id (from request.state.user_id)
+- client_id (from URL path)
+- endpoint, method, timestamp
+
+**Additional logging** in analytics service layer:
+
+```python
+# app/services/analytics/session_analytics.py
+
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+async def compute_for_job(self, job_id: UUID) -> SessionAnalytics:
+    # ... computation logic ...
+
+    # Audit log (structured, no PII)
+    logger.info(
+        "session_analytics_computed",
+        job_id=str(job_id),
+        client_id=str(client_id),
+        coach_id=str(coach_id),
+        engagement_score=float(analytics.engagement_score),
+        cue_count=total_cues,
+    )
+```
+
+### 6.5.2 Rate Limiting
+
+Reuse `RateLimitMiddleware` from Spec 0004. Analytics endpoints use default rate limits.
+
+If analytics-specific limits needed, add to `app/middleware/rate_limit.py`:
+
+```python
+RATE_LIMITS = {
+    # ... existing limits ...
+    "analytics_read": {"requests": 200, "window_seconds": 3600},  # 200/hour
+    "analytics_compute": {"requests": 10, "window_seconds": 3600},  # 10/hour (manual triggers)
+}
+```
+
+### 6.5.3 PII Protection in Logs
+
+**Rule**: Never log raw transcript content, utterance text, or cue excerpts.
+
+**Safe to log**: IDs, scores, counts, timestamps, cue types, risk levels.
+
+**Implementation** in structured logging:
+
+```python
+# In cue_detection.py - DON'T do this:
+# logger.info("Detected cue", text=utterance.text)  # BAD - contains PII
+
+# DO this:
+logger.info(
+    "cue_detected",
+    utterance_id=str(utterance.id),
+    cue_type=cue.cue_type,
+    confidence=cue.confidence,
+    # No text content!
+)
+```
+
+### 6.5.4 Quality Warnings Logic
+
+Quality warnings are set based on data quality issues during computation.
+
+**File**: `app/services/analytics/quality.py`
+
+```python
+from enum import Enum
+
+class QualityWarning(str, Enum):
+    LOW_CONFIDENCE_DIARIZATION = "low_confidence_diarization"
+    INSUFFICIENT_SESSIONS = "insufficient_sessions"
+    MISSING_SENTIMENT = "missing_sentiment"
+    SHORT_SESSION = "short_session"
+    STALE_RISK_SCORE = "stale_risk_score"
+
+
+def compute_quality_warnings(
+    utterances: list,
+    session_duration_seconds: float,
+    diarization_confidence: float,
+) -> list[str]:
+    """Compute quality warnings for a session."""
+    warnings = []
+
+    # Low confidence diarization (threshold: 0.7)
+    if diarization_confidence < 0.7:
+        warnings.append(QualityWarning.LOW_CONFIDENCE_DIARIZATION)
+
+    # Short session (< 2 minutes)
+    if session_duration_seconds < 120:
+        warnings.append(QualityWarning.SHORT_SESSION)
+
+    # Missing sentiment (no sentiment scores on utterances)
+    client_utterances = [u for u in utterances if u.speaker_label == "client"]
+    sentiments = [u.sentiment for u in client_utterances if u.sentiment is not None]
+    if len(sentiments) < len(client_utterances) * 0.5:  # < 50% have sentiment
+        warnings.append(QualityWarning.MISSING_SENTIMENT)
+
+    return warnings
+
+
+def compute_summary_quality_warnings(
+    client_analytics,
+    risk_score,
+    session_count: int,
+) -> list[str]:
+    """Compute quality warnings for client summary response."""
+    warnings = []
+
+    # Insufficient sessions for trends (< 2)
+    if session_count < 2:
+        warnings.append(QualityWarning.INSUFFICIENT_SESSIONS)
+
+    # Stale risk score (> 7 days old)
+    if risk_score and risk_score.valid_until < datetime.now(timezone.utc):
+        warnings.append(QualityWarning.STALE_RISK_SCORE)
+
+    return warnings
+```
+
+### 6.5.5 Error Handling for LLM Cue Detection Failure
+
+**Requirement**: If cue detection fails, skip cues but still compute/save other analytics.
+
+**Implementation** in Celery task:
+
+```python
+# app/workers/tasks/analytics.py
+
+@celery_app.task(bind=True, max_retries=3)
+def compute_session_analytics(self, job_id: str):
+    """Compute analytics with graceful cue detection failure handling."""
+    try:
+        # 1. Compute talk-time, coaching style, engagement (no LLM)
+        session_analytics = session_service.compute_basic_metrics(job_id)
+
+        # 2. Attempt cue detection (may fail)
+        try:
+            cues = await cue_service.detect_cues(utterances, session_analytics.id)
+            session_analytics = update_cue_counts(session_analytics, cues)
+        except CueDetectionError as e:
+            logger.warning(
+                "cue_detection_failed",
+                job_id=job_id,
+                error=str(e),
+            )
+            # Continue without cues - analytics still valid
+            session_analytics.quality_warnings.append("cue_detection_failed")
+
+        # 3. Save analytics (with or without cues)
+        db.add(session_analytics)
+        await db.commit()
+
+    except Exception as e:
+        self.retry(exc=e, countdown=60)
+```
+
+### Phase 6.5 Tests
+
+**File**: `tests/services/analytics/test_quality.py`
+
+- Test quality warning generation
+- Test each warning condition
+
+**File**: `tests/api/v1/test_analytics_security.py`
+
+- Test rate limiting on analytics endpoints
+- Test audit log entries created
+- Verify no PII in log output
+
+---
+
 ## Phase 7: Celery Tasks & Integration Tests
 
 **Goal**: Create background tasks and end-to-end tests.
