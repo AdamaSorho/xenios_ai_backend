@@ -1,5 +1,5 @@
 # Xenios AI Backend Makefile
-.PHONY: help dev test lint format build up down logs clean
+.PHONY: help dev test lint format build up down logs clean test-transcription worker-transcription
 
 # Default target
 help:
@@ -22,8 +22,14 @@ help:
 	@echo "  make clean        - Remove containers, volumes, and images"
 	@echo ""
 	@echo "Workers:"
-	@echo "  make worker       - Start default worker only"
-	@echo "  make flower       - Open Flower dashboard"
+	@echo "  make worker                 - Start default worker only"
+	@echo "  make worker-extraction      - Start extraction worker"
+	@echo "  make worker-transcription   - Start transcription worker"
+	@echo "  make flower                 - Open Flower dashboard"
+	@echo ""
+	@echo "Transcription:"
+	@echo "  make test-transcription     - Run transcription tests"
+	@echo "  make migrate-transcription  - Apply transcription DB migration"
 	@echo ""
 	@echo "Ansible Deployment:"
 	@echo "  make provision ENV=staging    - Provision VPS"
@@ -85,6 +91,26 @@ test-extraction:
 # Start extraction worker only
 worker-extraction:
 	docker compose -f docker/docker-compose.yml up -d worker-extraction
+
+# ============================================================================
+# Transcription (Spec 0003)
+# ============================================================================
+
+# Run transcription tests only
+test-transcription:
+	uv run pytest tests/test_transcription_*.py -v
+
+# Start transcription worker only
+worker-transcription:
+	docker compose -f docker/docker-compose.yml up -d worker-transcription
+
+# Run transcription worker locally (for development)
+worker-transcription-local:
+	uv run celery -A app.workers.celery_app worker -l info -Q transcription -c 2
+
+# Apply transcription database migration
+migrate-transcription:
+	psql $${DATABASE_URL} -f scripts/migrations/0003_transcription_tables.sql
 
 # ============================================================================
 # Docker
