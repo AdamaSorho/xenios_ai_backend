@@ -108,6 +108,57 @@ async def get_current_user(
     return user
 
 
+async def verify_coach_client_relationship(
+    db,
+    coach_id: str,
+    client_id: str,
+    raise_404: bool = False,
+) -> bool:
+    """
+    Verify that a coach has access to a client.
+
+    Args:
+        db: Database session
+        coach_id: The coach's user ID
+        client_id: The client's ID
+        raise_404: If True, raise 404 instead of 403 (prevents enumeration)
+
+    Returns:
+        True if relationship exists
+
+    Raises:
+        HTTPException: 404 or 403 if relationship doesn't exist
+    """
+    from sqlalchemy import text
+
+    # Query the coach_clients relationship table
+    query = text("""
+        SELECT 1 FROM public.coach_clients
+        WHERE coach_id = :coach_id
+        AND client_id = :client_id
+        AND status = 'active'
+        LIMIT 1
+    """)
+
+    result = await db.execute(query, {"coach_id": coach_id, "client_id": client_id})
+    relationship_exists = result.scalar_one_or_none() is not None
+
+    if not relationship_exists:
+        # Per spec: Return 404 instead of 403 to prevent client ID enumeration
+        if raise_404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Client not found",
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this client",
+            )
+
+    return True
+
+
 async def get_optional_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     settings: Annotated[Settings, Depends(get_settings)],
