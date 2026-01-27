@@ -174,12 +174,16 @@ class SessionAnalytics(BaseModel):
     open_question_count: int
     closed_question_count: int
 
-    # Language cue counts
-    cue_resistance_count: int
-    cue_commitment_count: int
-    cue_breakthrough_count: int
-    cue_concern_count: int
-    cue_deflection_count: int
+    # Language cue counts (matches CueType enum)
+    cue_resistance_count: int      # Risk indicator
+    cue_commitment_count: int      # Positive indicator
+    cue_breakthrough_count: int    # Positive indicator
+    cue_concern_count: int         # Neutral (depends on resolution)
+    cue_deflection_count: int      # Risk indicator
+    cue_enthusiasm_count: int      # Positive indicator
+    cue_doubt_count: int           # Risk indicator
+    cue_agreement_count: int       # Positive indicator
+    cue_goal_setting_count: int    # Positive indicator
 
     # Sentiment
     client_sentiment_score: float  # -1 to 1
@@ -392,9 +396,10 @@ The engagement score is a weighted composite of multiple factors:
 ```python
 def calculate_engagement_score(
     client_talk_percentage: float,      # Target: 40-60%
-    response_elaboration: float,         # Average words per client turn
-    turn_count: int,                     # Total back-and-forth
-    sentiment_score: float,              # -1 to 1
+    duration_minutes: float,             # Session duration in minutes
+    client_turns: int,                   # Number of client speaking turns
+    total_client_words: int,             # Total words spoken by client
+    sentiment_score: float,              # -1 to 1 (average client sentiment)
     commitment_cue_count: int,           # Positive indicator
     resistance_cue_count: int,           # Negative indicator
 ) -> float:
@@ -407,7 +412,17 @@ def calculate_engagement_score(
     - Interaction density (20): Turns per minute
     - Emotional engagement (15): Sentiment positivity
     - Commitment signals (15): Commitment vs resistance cues
+
+    Input definitions:
+    - client_talk_percentage: (client_talk_time / total_duration) * 100
+    - duration_minutes: total_duration_seconds / 60
+    - client_turns: count of utterances where speaker_label == "client"
+    - total_client_words: sum of word counts across all client utterances
+    - sentiment_score: average of sentiment scores for client utterances
     """
+    # Calculate response_elaboration (average words per client turn)
+    response_elaboration = total_client_words / max(client_turns, 1)
+
     # 1. Participation balance (25 points max)
     # Optimal: 50% client talk. Penalty for deviation.
     deviation = abs(client_talk_percentage - 50)
@@ -415,13 +430,11 @@ def calculate_engagement_score(
 
     # 2. Response depth (25 points max)
     # Baseline: 15 words/response. Max score at 30+ words.
-    words_per_turn = response_elaboration
-    depth_score = min(25, (words_per_turn / 30) * 25)
+    depth_score = min(25, (response_elaboration / 30) * 25)
 
     # 3. Interaction density (20 points max)
     # Baseline: 2 turns/minute is good engagement
-    # (calculated externally as turns / duration_minutes)
-    turns_per_minute = turn_count / max(duration_minutes, 1)
+    turns_per_minute = client_turns / max(duration_minutes, 1)
     density_score = min(20, turns_per_minute * 10)
 
     # 4. Emotional engagement (15 points max)
@@ -604,11 +617,41 @@ GET /api/v1/analytics/clients/{client_id}/risk
 
 GET /api/v1/analytics/clients/{client_id}/trends
   Query params:
-    - metrics: list[string]  # engagement, sentiment, talk_ratio
-    - window: string (30d, 90d, all_time)
+    - metrics: list[string]  # Valid values: "engagement", "sentiment", "talk_ratio"
+    - window: string (30d, 90d, all_time) - default 90d
   Response:
-    - trends: dict[metric, TrendData]
-    - data_points: list[DataPoint]
+    - trends: dict[string, TrendData]  # Key is metric name from request
+  Example response:
+    {
+      "trends": {
+        "engagement": {
+          "metric_name": "engagement",
+          "current_value": 72.5,
+          "previous_value": 68.0,
+          "change": 4.5,
+          "change_percentage": 6.6,
+          "trend": "improving",
+          "data_points": [
+            {"date": "2026-01-01", "value": 68.0, "session_id": "..."},
+            {"date": "2026-01-15", "value": 70.2, "session_id": "..."},
+            {"date": "2026-01-22", "value": 72.5, "session_id": "..."}
+          ]
+        },
+        "sentiment": {
+          "metric_name": "sentiment",
+          "current_value": 0.4,
+          "previous_value": 0.2,
+          "change": 0.2,
+          "change_percentage": 100.0,
+          "trend": "improving",
+          "data_points": [...]
+        }
+      }
+    }
+  Notes:
+    - Each requested metric has its own TrendData with embedded data_points
+    - data_points are ordered chronologically (oldest first)
+    - session_id is null for aggregated/interpolated points
 
 GET /api/v1/analytics/risk/alerts
   Query params:
@@ -846,15 +889,23 @@ class CueDetectionService:
         """
         Redact potential PII from text excerpts.
 
-        Redacts:
-        - Phone numbers
+        Redacts (pattern-based):
+        - Phone numbers (US format)
         - Email addresses
-        - Names (using simple patterns)
-        - Addresses
+        - SSN patterns
+
+        NOT redacted (out of scope for MVP):
+        - Names (would require NER model)
+        - Addresses (would require NER model)
+
+        Note: For health coaching context, most PII concerns are
+        around contact info. Session content itself is expected
+        to contain health information, which is protected at the
+        access control layer, not by redaction.
         """
         import re
 
-        # Phone numbers
+        # Phone numbers (US formats)
         text = re.sub(r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b', '[PHONE]', text)
         # Email addresses
         text = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '[EMAIL]', text)
@@ -960,6 +1011,107 @@ class RiskScoringService:
             description=f"Client had {analytics.sessions_last_30_days} sessions in last 30 days",
         )
 
+    def _compute_engagement_factor(self, analytics: ClientAnalytics) -> RiskFactor:
+        """Score based on engagement score decline."""
+        # Calculate engagement change over window
+        if len(analytics.engagement_scores_history) >= 2:
+            recent = analytics.engagement_scores_history[-1]
+            older = analytics.engagement_scores_history[0]
+            change = recent - older  # Negative = declining
+        else:
+            change = 0
+
+        # Use normalization helper (inverse=True because lower engagement = higher risk)
+        contribution = normalize_factor_contribution(
+            value=-change,  # Negative change becomes positive for risk
+            warning_threshold=-self.THRESHOLDS["engagement_decline_warning"],
+            critical_threshold=-self.THRESHOLDS["engagement_decline_critical"],
+            weight=self.WEIGHTS["engagement_trend"],
+            inverse=False,
+        )
+
+        return RiskFactor(
+            factor_type="engagement_trend",
+            contribution=contribution,
+            value=change,
+            threshold=self.THRESHOLDS["engagement_decline_warning"],
+            description=f"Engagement changed by {change:+.1f} points over window",
+        )
+
+    def _compute_sentiment_factor(self, analytics: ClientAnalytics) -> RiskFactor:
+        """Score based on sentiment decline."""
+        # Calculate sentiment change over window
+        if len(analytics.sentiment_scores_history) >= 2:
+            recent = analytics.sentiment_scores_history[-1]
+            older = analytics.sentiment_scores_history[0]
+            change = recent - older  # Negative = declining sentiment
+        else:
+            change = 0
+
+        contribution = normalize_factor_contribution(
+            value=-change,  # Negative change becomes positive for risk
+            warning_threshold=-self.THRESHOLDS["sentiment_decline_warning"],
+            critical_threshold=-self.THRESHOLDS["sentiment_decline_critical"],
+            weight=self.WEIGHTS["sentiment_trend"],
+            inverse=False,
+        )
+
+        return RiskFactor(
+            factor_type="sentiment_trend",
+            contribution=contribution,
+            value=change,
+            threshold=self.THRESHOLDS["sentiment_decline_warning"],
+            description=f"Sentiment changed by {change:+.2f} over window",
+        )
+
+    def _compute_resistance_factor(self, analytics: ClientAnalytics) -> RiskFactor:
+        """Score based on resistance-to-commitment ratio."""
+        if analytics.total_commitment_cues > 0:
+            ratio = analytics.total_resistance_cues / analytics.total_commitment_cues
+        elif analytics.total_resistance_cues > 0:
+            ratio = float('inf')  # All resistance, no commitment
+        else:
+            ratio = 1.0  # Neutral (no cues either way)
+
+        # Cap ratio for calculation
+        capped_ratio = min(ratio, 10.0)
+
+        contribution = normalize_factor_contribution(
+            value=capped_ratio,
+            warning_threshold=self.THRESHOLDS["resistance_ratio_warning"],
+            critical_threshold=self.THRESHOLDS["resistance_ratio_critical"],
+            weight=self.WEIGHTS["resistance_ratio"],
+            inverse=False,
+        )
+
+        return RiskFactor(
+            factor_type="resistance_ratio",
+            contribution=contribution,
+            value=ratio,
+            threshold=self.THRESHOLDS["resistance_ratio_warning"],
+            description=f"Resistance/commitment ratio: {ratio:.1f}:1",
+        )
+
+    def _compute_recency_factor(self, analytics: ClientAnalytics) -> RiskFactor:
+        """Score based on days since last session."""
+        days = analytics.days_since_last_session or 0
+
+        contribution = normalize_factor_contribution(
+            value=days,
+            warning_threshold=self.THRESHOLDS["days_since_session_warning"],
+            critical_threshold=self.THRESHOLDS["days_since_session_critical"],
+            weight=self.WEIGHTS["days_since_session"],
+            inverse=False,
+        )
+
+        return RiskFactor(
+            factor_type="days_since_session",
+            contribution=contribution,
+            value=days,
+            threshold=self.THRESHOLDS["days_since_session_warning"],
+            description=f"Last session was {days} days ago",
+        )
+
     def _score_to_level(self, score: float) -> RiskLevel:
         if score <= 25:
             return RiskLevel.LOW
@@ -1034,12 +1186,16 @@ CREATE TABLE ai_backend.session_analytics (
     open_question_count INTEGER DEFAULT 0,
     closed_question_count INTEGER DEFAULT 0,
 
-    -- Language cue counts
+    -- Language cue counts (matches CueType enum)
     cue_resistance_count INTEGER DEFAULT 0,
     cue_commitment_count INTEGER DEFAULT 0,
     cue_breakthrough_count INTEGER DEFAULT 0,
     cue_concern_count INTEGER DEFAULT 0,
     cue_deflection_count INTEGER DEFAULT 0,
+    cue_enthusiasm_count INTEGER DEFAULT 0,
+    cue_doubt_count INTEGER DEFAULT 0,
+    cue_agreement_count INTEGER DEFAULT 0,
+    cue_goal_setting_count INTEGER DEFAULT 0,
 
     -- Sentiment
     client_sentiment_score DECIMAL(4,3),  -- -1 to 1
@@ -1376,6 +1532,9 @@ def archive_old_analytics():
 | Client with 0 sessions | Return 404 for analytics endpoints |
 | Very short session (<2 min) | Flag as potentially incomplete, still compute |
 | Single speaker session | Talk-time 100% for one speaker, engagement scored differently |
+| Diarization mislabel (coach/client swapped) | Analytics computed as-is; flag low-confidence diarization sessions; coach can request reprocess after manual correction in Spec 0003 |
+| Missing utterance sentiment | Use 0 (neutral) for that utterance; note in metadata |
+| All utterances low confidence (<0.5) | Flag session analytics with `quality_warning: true` |
 
 ## Acceptance Criteria
 
@@ -1390,8 +1549,9 @@ def archive_old_analytics():
 - [ ] Resistance cues detected with >70% confidence
 - [ ] Commitment cues detected
 - [ ] Breakthrough moments identified
-- [ ] Cues linked to specific utterances
-- [ ] Context preserved for each cue
+- [ ] Cues linked to specific utterances (utterance_id reference)
+- [ ] Text excerpt stored (PII-redacted, max 200 chars)
+- [ ] Preceding context stored when available (PII-redacted, optional)
 
 ### AC3: Client Analytics
 - [ ] Daily batch computation runs successfully
