@@ -2,5 +2,6 @@
 
 from app.services.rag.embeddings import EmbeddingService
 from app.services.rag.openai_client import OpenAIEmbeddingClient
+from app.services.rag.retrieval import RetrievalService
 
-__all__ = ["OpenAIEmbeddingClient", "EmbeddingService"]
+__all__ = ["OpenAIEmbeddingClient", "EmbeddingService", "RetrievalService"]
