@@ -1,5 +1,6 @@
 """Analytics services for coaching session analysis."""
 
+from app.services.analytics.alerts import AlertsService, get_alerts_service
 from app.services.analytics.coaching_style import (
     CoachingStyleAnalyzer,
     CoachingStyleMetrics,
@@ -12,6 +13,11 @@ from app.services.analytics.cue_detection import (
 from app.services.analytics.engagement import (
     calculate_engagement_score,
     calculate_response_elaboration_score,
+)
+from app.services.analytics.risk_scoring import (
+    RiskScoringService,
+    get_risk_scoring_service,
+    normalize_factor_contribution,
 )
 from app.services.analytics.sentiment import (
     aggregate_sentiment,
@@ -61,4 +67,11 @@ __all__ = [
     "calculate_trend",
     "calculate_talk_ratio_trend",
     "calculate_session_frequency_trend",
+    # Risk scoring
+    "RiskScoringService",
+    "get_risk_scoring_service",
+    "normalize_factor_contribution",
+    # Alerts
+    "AlertsService",
+    "get_alerts_service",
 ]
