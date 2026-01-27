@@ -11,7 +11,7 @@ import httpx
 from app.config import get_settings
 from app.core.logging import get_logger
 from app.schemas.transcription import TranscriptionStatus, TranscriptionWebhookPayload
-from app.services.extraction.storage import get_storage_service
+from app.services.transcription.storage import get_transcription_storage_service
 from app.services.transcription.deepgram import (
     DeepgramError,
     DeepgramRateLimitError,
@@ -55,8 +55,11 @@ def run_async(coro):
     base=BaseTask,
     queue="transcription",
     max_retries=2,
-    soft_time_limit=600,  # 10 minutes soft limit
-    time_limit=900,  # 15 minutes hard limit
+    # Longer time limits to accommodate 2-hour audio + LLM summarization
+    # Deepgram processes ~1 min audio in ~3-5 seconds, so 2 hours = ~10 minutes
+    # Add buffer for download, diarization, and LLM = ~30 minutes max
+    soft_time_limit=7200,  # 2 hours soft limit
+    time_limit=7500,  # 2 hours + 5 min hard limit
     autoretry_for=(DeepgramTimeoutError, DeepgramRateLimitError),
     retry_backoff=30,  # 30s, 60s, 120s
     retry_backoff_max=300,
@@ -112,8 +115,8 @@ def process_transcription(self, job_id: str) -> dict[str, Any]:
         # 2. Update status to transcribing
         run_async(_update_status(conn, UUID(job_id), "transcribing", progress=10))
 
-        # 3. Download audio from S3
-        storage = get_storage_service()
+        # 3. Download audio from S3 (transcription storage)
+        storage = get_transcription_storage_service()
         temp_file_path = run_async(storage.download_to_temp_file(job["audio_url"]))
         logger.info("Audio downloaded", job_id=job_id, temp_path=temp_file_path)
 

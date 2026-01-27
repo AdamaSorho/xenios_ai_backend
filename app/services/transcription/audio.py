@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.config import get_settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -40,6 +41,7 @@ class AudioService:
     Audio file utilities using ffprobe.
 
     Provides duration detection, format validation, and metadata extraction.
+    Limits are read from application settings for consistency.
     """
 
     # Supported audio formats (per spec)
@@ -56,10 +58,24 @@ class AudioService:
         "webm": "audio/webm",
     }
 
-    # Limits per spec
-    MAX_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB
-    MAX_DURATION_SECONDS = 2 * 60 * 60  # 2 hours
-    MIN_DURATION_SECONDS = 10  # 10 seconds
+    def __init__(self) -> None:
+        """Initialize the audio service with settings."""
+        self._settings = get_settings()
+
+    @property
+    def max_size_bytes(self) -> int:
+        """Maximum file size in bytes from settings."""
+        return self._settings.transcription_max_file_size_mb * 1024 * 1024
+
+    @property
+    def max_duration_seconds(self) -> int:
+        """Maximum duration in seconds from settings."""
+        return self._settings.transcription_max_duration_minutes * 60
+
+    @property
+    def min_duration_seconds(self) -> int:
+        """Minimum duration in seconds from settings."""
+        return self._settings.transcription_min_duration_seconds
 
     def get_audio_info(self, file_path: str) -> AudioInfo:
         """
@@ -155,24 +171,24 @@ class AudioService:
             return False, str(e)
 
         # Check size
-        if info.size_bytes > self.MAX_SIZE_BYTES:
+        if info.size_bytes > self.max_size_bytes:
             return False, (
                 f"File too large: {info.size_bytes / (1024 * 1024):.1f} MB "
-                f"(max {self.MAX_SIZE_BYTES / (1024 * 1024):.0f} MB)"
+                f"(max {self.max_size_bytes / (1024 * 1024):.0f} MB)"
             )
 
         # Check duration if requested
         if check_duration:
-            if info.duration_seconds > self.MAX_DURATION_SECONDS:
+            if info.duration_seconds > self.max_duration_seconds:
                 return False, (
                     f"Duration too long: {info.duration_seconds / 60:.1f} minutes "
-                    f"(max {self.MAX_DURATION_SECONDS / 60:.0f} minutes)"
+                    f"(max {self.max_duration_seconds / 60:.0f} minutes)"
                 )
 
-            if info.duration_seconds < self.MIN_DURATION_SECONDS:
+            if info.duration_seconds < self.min_duration_seconds:
                 return False, (
                     f"Duration too short: {info.duration_seconds:.1f} seconds "
-                    f"(min {self.MIN_DURATION_SECONDS} seconds)"
+                    f"(min {self.min_duration_seconds} seconds)"
                 )
 
         return True, None

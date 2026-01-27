@@ -35,8 +35,8 @@ from app.schemas.transcription import (
     TranscriptResponse,
     UtteranceResponse,
 )
-from app.services.extraction.storage import get_storage_service
 from app.services.transcription.audio import get_audio_service
+from app.services.transcription.storage import get_transcription_storage_service
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -55,25 +55,50 @@ def generate_webhook_secret() -> str:
     return secrets.token_urlsafe(32)
 
 
-async def validate_webhook_url(url: str) -> bool:
+def validate_webhook_url(url: str) -> tuple[bool, str | None]:
     """
-    Validate webhook URL is reachable and HTTPS.
+    Validate webhook URL format and security.
 
     Per spec: HTTPS required except for localhost.
-    """
-    # Allow localhost for development
-    if "localhost" in url or "127.0.0.1" in url:
-        return True
+    Does NOT make network requests to avoid SSRF risk.
 
-    if not url.startswith("https://"):
-        return False
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    from urllib.parse import urlparse
 
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.head(url, timeout=5.0)
-            return response.status_code < 400
+        parsed = urlparse(url)
     except Exception:
-        return False
+        return False, "Invalid URL format"
+
+    # Must have a scheme and netloc
+    if not parsed.scheme or not parsed.netloc:
+        return False, "Invalid URL format"
+
+    # Allow localhost for development
+    hostname = parsed.hostname or ""
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        return True, None
+
+    # HTTPS required for non-localhost
+    if parsed.scheme != "https":
+        return False, "Webhook URL must use HTTPS"
+
+    # Block private IP ranges to prevent SSRF
+    # Note: We don't make network requests to validate reachability
+    # The webhook delivery will handle unreachable endpoints with retries
+    import ipaddress
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+            return False, "Webhook URL cannot point to private IP addresses"
+    except ValueError:
+        # Not an IP address, it's a hostname - that's fine
+        pass
+
+    return True, None
 
 
 async def get_job_or_404(
@@ -188,16 +213,16 @@ async def upload_audio(
     # Validate webhook URL if provided
     webhook_secret = None
     if webhook_url:
-        is_valid = await validate_webhook_url(webhook_url)
+        is_valid, error_msg = validate_webhook_url(webhook_url)
         if not is_valid:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Webhook URL must be HTTPS and reachable (except localhost)",
+                detail=error_msg or "Invalid webhook URL",
             )
         webhook_secret = generate_webhook_secret()
 
-    # Upload to S3
-    storage = get_storage_service()
+    # Upload to S3 (transcription-specific storage)
+    storage = get_transcription_storage_service()
     content_type = audio_service.get_content_type(filename)
     file_url = await storage.upload_file(
         file_content=content,
@@ -690,7 +715,7 @@ async def delete_transcription(
     # Delete audio file if requested
     if delete_audio and job["audio_url"]:
         try:
-            storage = get_storage_service()
+            storage = get_transcription_storage_service()
             await storage.delete_file(job["audio_url"])
             logger.info("Audio file deleted", job_id=str(job_id), audio_url=job["audio_url"])
         except Exception as e:

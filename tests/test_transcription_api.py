@@ -92,7 +92,7 @@ class TestTranscriptionAPI:
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert "unsupported format" in response.json()["detail"].lower()
 
-    @patch("app.api.v1.transcription.get_storage_service")
+    @patch("app.api.v1.transcription.get_transcription_storage_service")
     @patch("app.api.v1.transcription.get_audio_service")
     @patch("app.core.database.get_db")
     @patch("app.workers.tasks.transcription.process_transcription")
