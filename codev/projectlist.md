@@ -151,15 +151,15 @@ projects:
   - id: "0004"
     title: "RAG Chat & Insights"
     summary: "pgvector embeddings, grounded chat responses, and AI-generated insight drafts"
-    status: implementing
+    status: committed
     priority: medium
     files:
       spec: codev/specs/0004-rag-chat-insights.md
       plan: codev/plans/0004-rag-chat-insights.md
-      review: null
+      review: codev/reviews/0004-rag-chat-insights.md
     dependencies: ["0001", "0002", "0003"]
     tags: [features, chat, ai]
-    notes: "Depends on foundation, extraction, and transcription for session summaries"
+    notes: "PR #6 merged 2026-01-27. Ready for production validation."
 
   - id: "0005"
     title: "Coaching Analytics & Risk Detection"
