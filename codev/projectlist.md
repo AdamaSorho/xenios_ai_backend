@@ -167,12 +167,12 @@ projects:
     status: conceived
     priority: medium
     files:
-      spec: null
+      spec: codev/specs/0005-coaching-analytics-risk-detection.md
       plan: null
       review: null
     dependencies: ["0001", "0003"]
     tags: [features, analytics, ai]
-    notes: "Depends on transcription data; PRD Weeks 5-6"
+    notes: "Spec ready for review. Depends on transcription data from Spec 0003."
 ```
 
 ## Next Available Number
