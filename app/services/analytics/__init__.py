@@ -1,6 +1,12 @@
 """Analytics services for coaching session analysis."""
 
 from app.services.analytics.alerts import AlertsService, get_alerts_service
+from app.services.analytics.authorization import (
+    require_coach_client_relationship,
+    require_job_ownership,
+    verify_coach_client_relationship,
+    verify_job_ownership,
+)
 from app.services.analytics.coaching_style import (
     CoachingStyleAnalyzer,
     CoachingStyleMetrics,
@@ -74,4 +80,9 @@ __all__ = [
     # Alerts
     "AlertsService",
     "get_alerts_service",
+    # Authorization
+    "require_coach_client_relationship",
+    "require_job_ownership",
+    "verify_coach_client_relationship",
+    "verify_job_ownership",
 ]

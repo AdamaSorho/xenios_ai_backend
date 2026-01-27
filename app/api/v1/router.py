@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from app.api.v1.analytics import router as analytics_router
 from app.api.v1.extraction import router as extraction_router
 from app.api.v1.llm import router as llm_router
 from app.api.v1.status import router as status_router
@@ -20,3 +21,6 @@ router.include_router(extraction_router)
 
 # Transcription endpoints (Spec 0003)
 router.include_router(transcription_router)
+
+# Analytics endpoints (Spec 0005)
+router.include_router(analytics_router)
