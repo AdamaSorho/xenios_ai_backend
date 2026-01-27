@@ -392,8 +392,9 @@ class EmbeddingService:
         # Health profile
         if not source_types or "health_profile" in source_types:
             profile_text = await self._build_health_profile_text(client_id)
-            if await self._should_update(client_id, "health_profile", profile_text, force):
-                await self._store_embedding(client_id, "health_profile", profile_text)
+            profile_source_id = f"{client_id}:profile"
+            if await self._should_update(client_id, "health_profile", profile_source_id, profile_text, force):
+                await self._store_embedding(client_id, "health_profile", profile_source_id, profile_text)
                 updated += 1
             else:
                 skipped += 1
@@ -402,9 +403,10 @@ class EmbeddingService:
         if not source_types or "health_metric_summary" in source_types:
             metric_summaries = await self._build_metric_summaries(client_id)
             for summary in metric_summaries:
-                if await self._should_update(client_id, "health_metric_summary", summary.text, force):
+                metric_source_id = f"{client_id}:metric:{summary.metric_type}:{summary.week}"
+                if await self._should_update(client_id, "health_metric_summary", metric_source_id, summary.text, force):
                     await self._store_embedding(
-                        client_id, "health_metric_summary", summary.text,
+                        client_id, "health_metric_summary", metric_source_id, summary.text,
                         metadata={"metric_type": summary.metric_type, "week": summary.week}
                     )
                     updated += 1
@@ -484,9 +486,23 @@ class RetrievalService:
         )
 
         # Fetch full content for each result
+        # Source Content Retrieval by Type:
+        # - health_profile: JOIN client_health_profiles ON client_id
+        # - health_metric_summary: Use stored content_text (already aggregated)
+        # - session_summary: JOIN ai_backend.session_summaries ON source_id
+        # - checkin_summary: JOIN checkins ON source_id, use ai_summary field
+        # - lab_result: JOIN lab_values ON source_id
+        # - message_thread: Use stored content_text (already aggregated)
+        #
+        # Failure Handling:
+        # - Soft-deleted source: Skip, don't include in context
+        # - Missing source (FK violation): Log warning, skip
+        # - Auth check: Verify client_id matches (defense in depth)
         contexts = []
         for result in results:
             content = await self._fetch_source_content(result)
+            if content is None:  # Source deleted or missing
+                continue
             contexts.append(RetrievedContext(
                 source_type=result.source_type,
                 source_id=result.source_id,
@@ -1146,6 +1162,12 @@ POST /api/v1/insights/generate
 - Max 3 insights per client per week (regardless of triggers)
 - Max 1 insight per trigger type per day
 - Cooldown: 48 hours after insight is approved/rejected before same type
+
+**Rate Limit Storage:**
+- Tracked via `insight_generation_log` table (already defined)
+- Query: `SELECT COUNT(*) FROM insight_generation_log WHERE client_id = $1 AND status = 'generated' AND created_at > NOW() - INTERVAL '7 days'`
+- Trigger type check: `AND insight_type = $2 AND created_at > NOW() - INTERVAL '1 day'`
+- No separate Redis counter needed; DB is source of truth
 
 **Rationale:** Prevents insight fatigue. Quality over quantity. Coaches can manually trigger if needed.
 
