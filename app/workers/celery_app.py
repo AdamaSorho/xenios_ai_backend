@@ -1,6 +1,7 @@
 """Celery application configuration."""
 
 from celery import Celery
+from celery.schedules import crontab
 
 from app.config import get_settings
 
@@ -47,3 +48,28 @@ celery_app.conf.update(
 
 # Auto-discover tasks in the app.workers.tasks package
 celery_app.autodiscover_tasks(["app.workers.tasks"])
+
+# Celery Beat schedule for periodic tasks
+celery_app.conf.beat_schedule = {
+    # Analytics batch jobs (Spec 0005)
+    "compute-client-analytics-daily": {
+        "task": "app.workers.tasks.analytics.compute_client_analytics_batch",
+        "schedule": crontab(hour=2, minute=0),  # 2:00 AM UTC daily
+    },
+    "compute-risk-scores-daily": {
+        "task": "app.workers.tasks.analytics.compute_risk_scores_batch",
+        "schedule": crontab(hour=3, minute=0),  # 3:00 AM UTC daily
+    },
+    "generate-risk-alerts-daily": {
+        "task": "app.workers.tasks.analytics.generate_risk_alerts",
+        "schedule": crontab(hour=3, minute=30),  # 3:30 AM UTC daily
+    },
+    "cleanup-expired-risk-scores": {
+        "task": "app.workers.tasks.analytics.cleanup_expired_risk_scores",
+        "schedule": crontab(hour=4, minute=0),  # 4:00 AM UTC daily
+    },
+    "archive-old-analytics-monthly": {
+        "task": "app.workers.tasks.analytics.archive_old_analytics",
+        "schedule": crontab(day_of_month=1, hour=5, minute=0),  # 1st of month at 5 AM
+    },
+}
