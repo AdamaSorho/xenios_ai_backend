@@ -141,12 +141,12 @@ projects:
     status: conceived
     priority: high
     files:
-      spec: null
+      spec: codev/specs/0003-transcription-session-processing.md
       plan: null
       review: null
-    dependencies: ["0001"]
+    dependencies: ["0001", "0002"]
     tags: [features, transcription, ai]
-    notes: "Depends on foundation; PRD Weeks 3-4"
+    notes: "Depends on foundation and extraction (S3 reuse); PRD Weeks 3-4"
 
   - id: "0004"
     title: "RAG Chat & Insights"
