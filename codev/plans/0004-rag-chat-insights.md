@@ -66,8 +66,12 @@ CREATE INDEX idx_embeddings_client ON ai_backend.embeddings(client_id);
 CREATE INDEX idx_embeddings_source_type ON ai_backend.embeddings(client_id, source_type);
 CREATE INDEX idx_embeddings_hash ON ai_backend.embeddings(client_id, content_hash);
 
--- Vector similarity index (IVFFlat for approximate nearest neighbor)
--- Note: IVFFlat requires training data; use HNSW for better cold-start performance
+-- Vector similarity index
+-- Spec mentions IVFFlat, but HNSW is preferred for this use case:
+-- - IVFFlat requires training data (lists parameter) and vacuuming
+-- - HNSW works out-of-box with no training, better for cold start
+-- - HNSW has better recall at similar speed for <1M vectors
+-- Decision: Use HNSW; document trade-off in implementation review
 CREATE INDEX idx_embeddings_vector ON ai_backend.embeddings
     USING hnsw (embedding vector_cosine_ops);
 
@@ -755,6 +759,8 @@ Please acknowledge that you don't have enough specific information and suggest w
         coach_id: UUID,
         message: str,
         conversation_id: UUID | None = None,
+        max_context_items: int = 10,
+        include_sources: bool = True,
     ) -> ChatResponse:
         """Generate grounded response with citations."""
         # Load conversation history
@@ -765,11 +771,18 @@ Please acknowledge that you don't have enough specific information and suggest w
                 limit=10,
             )
 
-        # Retrieve relevant context
-        contexts = await self.retrieval_service.retrieve_context(
+        # Retrieve relevant context (more than needed for filtering)
+        raw_contexts = await self.retrieval_service.retrieve_context(
             client_id=client_id,
             query=message,
-            max_items=10,
+            max_items=max_context_items * 2,  # Get extra for context policy filtering
+        )
+
+        # Apply context policy (priority ordering, token limits)
+        contexts = self._apply_context_policy(
+            raw_contexts,
+            max_items=max_context_items,
+            max_tokens=4000,
         )
 
         # Build context string
@@ -792,8 +805,10 @@ Please acknowledge that you don't have enough specific information and suggest w
             messages=messages,
         )
 
-        # Extract citations
-        sources = self._extract_citations(response.content, contexts) if has_context else []
+        # Extract citations (only if include_sources=True)
+        sources = []
+        if include_sources and has_context:
+            sources = self._extract_citations(response.content, contexts)
 
         # Persist chat history
         final_conversation_id = conversation_id or uuid4()
@@ -1662,9 +1677,53 @@ def generate_client_insight(
 @celery_app.task(queue="llm")
 def batch_update_embeddings():
     """Nightly batch update for all active clients."""
-    # Query all active clients
-    # Queue individual embedding update tasks
-    pass
+    async def _run():
+        async with get_async_session() as db:
+            # Query all active client-coach pairs
+            from sqlalchemy import text
+            result = await db.execute(text("""
+                SELECT DISTINCT client_id FROM public.coach_clients
+                WHERE status = 'active'
+            """))
+            clients = result.fetchall()
+
+            for row in clients:
+                update_client_embeddings.delay(str(row.client_id))
+
+            return {"queued": len(clients)}
+
+    return asyncio.run(_run())
+
+
+@celery_app.task(queue="llm")
+def batch_generate_insights():
+    """Scheduled task to generate insights for all active clients (AC6)."""
+    async def _run():
+        async with get_async_session() as db:
+            # Query all active client-coach pairs
+            from sqlalchemy import text
+            result = await db.execute(text("""
+                SELECT cc.client_id, cc.coach_id
+                FROM public.coach_clients cc
+                WHERE cc.status = 'active'
+            """))
+            pairs = result.fetchall()
+
+            queued = 0
+            for row in pairs:
+                # Check if insight should be generated (e.g., significant changes)
+                # For now, queue with "scheduled" trigger
+                generate_client_insight.delay(
+                    str(row.client_id),
+                    str(row.coach_id),
+                    "scheduled",
+                    None,
+                )
+                queued += 1
+
+            return {"queued": queued}
+
+    return asyncio.run(_run())
 ```
 
 ### 6.2 Register routers
@@ -1798,6 +1857,7 @@ async def test_invalid_client_returns_404():
 
 ### Phase 4
 - `app/services/rag/chat.py`
+- `app/services/rag/prompts.py`
 - `app/api/v1/chat.py`
 
 ### Phase 5
