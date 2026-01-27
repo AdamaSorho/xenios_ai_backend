@@ -151,7 +151,7 @@ projects:
   - id: "0004"
     title: "RAG Chat & Insights"
     summary: "pgvector embeddings, grounded chat responses, and AI-generated insight drafts"
-    status: specified
+    status: implementing
     priority: medium
     files:
       spec: codev/specs/0004-rag-chat-insights.md
