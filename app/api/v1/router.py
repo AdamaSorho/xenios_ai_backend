@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from app.api.v1.extraction import router as extraction_router
 from app.api.v1.llm import router as llm_router
 from app.api.v1.status import router as status_router
 
@@ -12,3 +13,6 @@ router.include_router(status_router)
 
 # LLM endpoints
 router.include_router(llm_router)
+
+# Document extraction endpoints
+router.include_router(extraction_router)

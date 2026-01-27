@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<HealthData locale="en_US">
+  <Record type="HKQuantityTypeIdentifierStepCount" startDate="2024-01-15 00:00:00 -0500" value="8542"/>
+  <Record type="HKQuantityTypeIdentifierStepCount" startDate="2024-01-16 00:00:00 -0500" value="10234"/>
+  <Record type="HKQuantityTypeIdentifierRestingHeartRate" startDate="2024-01-15 00:00:00 -0500" value="62"/>
+  <Record type="HKQuantityTypeIdentifierRestingHeartRate" startDate="2024-01-16 00:00:00 -0500" value="60"/>
+  <Record type="HKQuantityTypeIdentifierHeartRateVariabilitySDNN" startDate="2024-01-15 00:00:00 -0500" value="45.5"/>
+  <Record type="HKQuantityTypeIdentifierHeartRateVariabilitySDNN" startDate="2024-01-16 00:00:00 -0500" value="52.3"/>
+  <Record type="HKQuantityTypeIdentifierActiveEnergyBurned" startDate="2024-01-15 00:00:00 -0500" value="450"/>
+  <Record type="HKQuantityTypeIdentifierActiveEnergyBurned" startDate="2024-01-16 00:00:00 -0500" value="520"/>
+</HealthData>
