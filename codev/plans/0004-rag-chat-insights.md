@@ -66,14 +66,12 @@ CREATE INDEX idx_embeddings_client ON ai_backend.embeddings(client_id);
 CREATE INDEX idx_embeddings_source_type ON ai_backend.embeddings(client_id, source_type);
 CREATE INDEX idx_embeddings_hash ON ai_backend.embeddings(client_id, content_hash);
 
--- Vector similarity index
--- Spec mentions IVFFlat, but HNSW is preferred for this use case:
--- - IVFFlat requires training data (lists parameter) and vacuuming
--- - HNSW works out-of-box with no training, better for cold start
--- - HNSW has better recall at similar speed for <1M vectors
--- Decision: Use HNSW; document trade-off in implementation review
+-- Vector similarity index (IVFFlat as per spec)
+-- IVFFlat requires lists parameter; use 100 for expected <100K vectors
+-- After initial data load, run: REINDEX INDEX idx_embeddings_vector
 CREATE INDEX idx_embeddings_vector ON ai_backend.embeddings
-    USING hnsw (embedding vector_cosine_ops);
+    USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
 
 -- Chat history for context continuity
 CREATE TABLE ai_backend.chat_history (
@@ -978,8 +976,11 @@ async def chat_complete(
     current_user = Depends(get_current_user),
 ):
     """Generate grounded chat response."""
+    # Returns 404 (not 403) for invalid/unauthorized client_id
+    # This prevents enumeration of valid client IDs
     await verify_coach_client_relationship(
-        db, coach_id=current_user.id, client_id=request.client_id
+        db, coach_id=current_user.id, client_id=request.client_id,
+        raise_404=True  # Per spec: invalid client_id returns 404 not 403
     )
 
     chat_service = ChatService(db)
@@ -1588,11 +1589,42 @@ def configure_logging():
 
 def _redact_phi_processor(logger, method_name, event_dict):
     """Redact PHI from log events."""
-    phi_fields = ["content", "message", "response", "embedding", "content_text"]
+    phi_fields = [
+        "content", "message", "response", "embedding", "content_text",
+        "client_message", "rationale", "body", "request_body", "text",
+    ]
     for field in phi_fields:
         if field in event_dict:
             event_dict[field] = "[REDACTED]"
     return event_dict
+```
+
+### 5.5.4 Configure exception handlers with PHI redaction
+
+**File**: `app/core/exceptions.py` (add)
+
+```python
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import structlog
+
+logger = structlog.get_logger()
+
+async def generic_exception_handler(request: Request, exc: Exception):
+    """Handle exceptions without leaking PHI in error messages."""
+    # Log full error server-side (PHI will be redacted by processor)
+    await logger.aerror(
+        "unhandled_exception",
+        exc_type=type(exc).__name__,
+        # Don't log request body or error details that might contain PHI
+        path=request.url.path,
+    )
+
+    # Return generic error to client
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "code": "INTERNAL_ERROR"}
+    )
 ```
 
 ---
