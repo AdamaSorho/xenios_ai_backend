@@ -154,12 +154,12 @@ projects:
     status: conceived
     priority: medium
     files:
-      spec: null
+      spec: codev/specs/0004-rag-chat-insights.md
       plan: null
       review: null
-    dependencies: ["0001", "0002"]
+    dependencies: ["0001", "0002", "0003"]
     tags: [features, chat, ai]
-    notes: "Depends on foundation and extraction for data to ground responses"
+    notes: "Depends on foundation, extraction, and transcription for session summaries"
 
   - id: "0005"
     title: "Coaching Analytics & Risk Detection"
