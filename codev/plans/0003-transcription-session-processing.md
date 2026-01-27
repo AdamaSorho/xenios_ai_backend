@@ -15,6 +15,15 @@ Build the transcription pipeline incrementally, starting with Deepgram integrati
 - Reuse S3 storage patterns from Spec 0002
 - Test with sample audio files at each phase
 - Security and authorization from the start
+- File-based processing for large audio (avoid loading 500MB into memory)
+- Intent classification as part of diarization phase
+
+**Status Enum (per spec):**
+```
+pending → uploading → transcribing → diarizing → summarizing → completed
+                                                             → partial (if summary fails)
+                                                             → failed
+```
 
 ---
 
@@ -57,9 +66,9 @@ class DeepgramService:
         settings = get_settings()
         self.client = DeepgramClient(settings.deepgram_api_key)
 
-    async def transcribe(
+    async def transcribe_file(
         self,
-        audio_bytes: bytes,
+        file_path: str,
         options: dict | None = None,
     ) -> TranscriptionResponse:
         """
@@ -87,10 +96,12 @@ class DeepgramService:
                 setattr(default_options, key, value)
 
         try:
-            response = await self.client.listen.asyncrest.v1.transcribe_file(
-                {"buffer": audio_bytes},
-                default_options,
-            )
+            # Stream from file to avoid loading into memory
+            with open(file_path, "rb") as audio_file:
+                response = await self.client.listen.asyncrest.v1.transcribe_file(
+                    {"buffer": audio_file},
+                    default_options,
+                )
             return self._parse_response(response)
         except Exception as e:
             logger.error("Deepgram transcription failed", error=str(e))
@@ -327,10 +338,16 @@ async def upload_audio(
     # 1. Validate file format
     # 2. Save to temp file, validate duration
     # 3. Upload to S3
-    # 4. Create transcription_job record (owned by user.coach_id)
-    # 5. Queue Celery task
-    # 6. Return job_id
+    # 4. Generate webhook_secret if webhook_url provided
+    # 5. Create transcription_job record (owned by user.coach_id)
+    # 6. Queue Celery task
+    # 7. Return job_id and webhook_secret (one-time display)
     pass
+
+def generate_webhook_secret() -> str:
+    """Generate secure webhook signing secret."""
+    import secrets
+    return secrets.token_urlsafe(32)
 
 @router.get("/status/{job_id}")
 async def get_transcription_status(
@@ -774,9 +791,72 @@ async def update_speaker_labels(
     pass
 ```
 
+4.4 **Create intent classification service** (`app/services/transcription/intent.py`)
+```python
+from app.services.llm.client import LLMClient
+
+class IntentClassificationService:
+    """Classify utterance intents using LLM."""
+
+    INTENTS = [
+        "question_open", "question_closed", "reflection", "advice",
+        "encouragement", "challenge", "instruction", "acknowledgment",
+        "concern", "commitment", "resistance", "update",
+    ]
+
+    INTENT_PROMPT = '''Classify the intent of this coaching utterance.
+
+UTTERANCE: {text}
+SPEAKER: {speaker_label}
+
+Classify as one of: {intents}
+
+Respond with just the classification word.'''
+
+    def __init__(self):
+        self.llm_client = LLMClient()
+
+    async def classify_utterances(
+        self,
+        utterances: list[Utterance],
+        batch_size: int = 10,
+    ) -> list[Utterance]:
+        """Classify intents for utterances in batches."""
+        # Batch classification to reduce API calls
+        # Use simple task model (Sonnet 4) for speed
+        for batch in self._batch(utterances, batch_size):
+            intents = await self._classify_batch(batch)
+            for utt, intent in zip(batch, intents):
+                utt.intent = intent
+        return utterances
+
+    async def _classify_batch(self, utterances: list[Utterance]) -> list[str]:
+        """Classify a batch of utterances."""
+        batch_prompt = self._build_batch_prompt(utterances)
+        response = await self.llm_client.complete(
+            task="intent_classification",  # Uses Sonnet 4 per model config
+            messages=[{"role": "user", "content": batch_prompt}],
+        )
+        return self._parse_batch_response(response.content, len(utterances))
+```
+
+4.5 **Integrate intent classification into pipeline**
+```python
+# In process_transcription task, after diarization:
+intent_service = IntentClassificationService()
+# Only classify a sample if transcript is very long (cost control)
+if len(labeled_utterances) > 100:
+    sample = labeled_utterances[:50] + labeled_utterances[-50:]
+    await intent_service.classify_utterances(sample)
+else:
+    await intent_service.classify_utterances(labeled_utterances)
+await self._update_utterance_intents(labeled_utterances)
+```
+
 ### Acceptance Criteria Coverage
 - AC4: Speaker Diarization
 - AC11: Error Handling (multi-speaker)
+- Intent Classification (from spec Must Have #7)
 
 ### Verification
 ```bash
@@ -800,7 +880,9 @@ uv run pytest tests/test_diarization.py::test_multi_speaker -v
 from app.services.llm.client import LLMClient
 
 class SummarizationService:
-    """Generate session summaries using LLM."""
+    """Generate session summaries using LLM (Opus 4.5 per spec)."""
+
+    # Uses task="session_summary" which routes to Opus 4.5 per MODEL_CONFIG in Spec 0001
 
     SESSION_SUMMARY_PROMPT = '''You are analyzing a coaching session transcript.
 
@@ -1148,11 +1230,27 @@ class TestTranscriptionSecurity:
 ```makefile
 # Transcription-specific commands
 test-transcription:
-	uv run pytest tests/test_*transcription*.py tests/test_*diarization*.py tests/test_*summarization*.py -v
+	uv run pytest tests/test_*transcription*.py tests/test_*diarization*.py tests/test_*summarization*.py tests/test_*intent*.py -v
 
 worker-transcription:
 	celery -A app.workers.celery_app worker -l info -Q transcription -c 3
 ```
+
+6.7 **Configure S3 lifecycle policy for audio deletion**
+```json
+// S3 bucket lifecycle rule (per spec AC12: 90-day retention)
+{
+  "Rules": [
+    {
+      "ID": "Delete transcription audio after 90 days",
+      "Filter": {"Prefix": "transcriptions/"},
+      "Status": "Enabled",
+      "Expiration": {"Days": 90}
+    }
+  ]
+}
+```
+Document S3 lifecycle setup in deployment docs.
 
 6.7 **Update Docker Compose** for transcription worker
 - Ensure DEEPGRAM_API_KEY in transcription worker environment
@@ -1221,6 +1319,8 @@ Phase 6: Webhooks & Testing ──────────────► Notifi
 
 ### Phase 4
 - `app/services/transcription/diarization.py`
+- `app/services/transcription/intent.py`
+- `tests/test_intent_classification.py`
 
 ### Phase 5
 - `app/services/transcription/summarization.py`
