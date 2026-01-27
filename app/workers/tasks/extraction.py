@@ -19,6 +19,20 @@ from app.workers.tasks.base import BaseTask
 logger = get_logger(__name__)
 settings = get_settings()
 
+# Track if extractors have been registered
+_extractors_registered = False
+
+
+def ensure_extractors_registered() -> None:
+    """Ensure extractors are registered with the document router."""
+    global _extractors_registered
+    if not _extractors_registered:
+        from app.services.extraction import register_extractors
+
+        register_extractors()
+        _extractors_registered = True
+        logger.info("Extractors registered successfully")
+
 
 def get_sync_db():
     """Get synchronous database connection for Celery tasks."""
@@ -69,6 +83,9 @@ def process_extraction(self, job_id: str) -> dict[str, Any]:
     8. Update job status
     9. Send webhook notification (optional)
     """
+    # Ensure extractors are registered
+    ensure_extractors_registered()
+
     logger.info("Starting extraction job", job_id=job_id)
 
     conn = get_sync_db()
