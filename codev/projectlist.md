@@ -164,7 +164,7 @@ projects:
   - id: "0005"
     title: "Coaching Analytics & Risk Detection"
     summary: "Talk-time analysis, cue patterns, sentiment trends, and client churn prediction"
-    status: conceived
+    status: specified
     priority: medium
     files:
       spec: codev/specs/0005-coaching-analytics-risk-detection.md
@@ -172,7 +172,7 @@ projects:
       review: null
     dependencies: ["0001", "0003"]
     tags: [features, analytics, ai]
-    notes: "Spec ready for review. Depends on transcription data from Spec 0003."
+    notes: "Spec approved 2026-01-27. Ready for planning."
 ```
 
 ## Next Available Number
