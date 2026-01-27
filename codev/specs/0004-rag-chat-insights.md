@@ -415,6 +415,7 @@ class EmbeddingService:
         self,
         client_id: UUID,
         source_type: str,
+        source_id: str,  # Deterministic composite key
         text: str,
         force: bool,
     ) -> bool:
@@ -423,7 +424,7 @@ class EmbeddingService:
             return True
 
         content_hash = hashlib.sha256(text.encode()).hexdigest()
-        existing = await self._get_existing_embedding(client_id, source_type)
+        existing = await self._get_existing_embedding(client_id, source_type, source_id)
 
         if existing and existing.content_hash == content_hash:
             return False
@@ -585,10 +586,25 @@ The coach is asking about their client. Respond helpfully using the context abov
         # 4. Extract citations from response
         sources = self._extract_citations(response.content, contexts)
 
+        # 5. Persist to chat history
+        # If no conversation_id provided, generate new one
+        # Store both user message and assistant response
+        final_conversation_id = conversation_id or uuid4()
+        await self._persist_chat_history(
+            conversation_id=final_conversation_id,
+            client_id=client_id,
+            coach_id=coach_id,  # From auth context
+            user_message=message,
+            assistant_response=response.content,
+            sources_used=sources,
+            tokens_used=response.usage.total_tokens,
+        )
+
         return ChatResponse(
             response=response.content,
             sources=sources,
             confidence=self._calculate_confidence(contexts),
+            has_context=len(contexts) > 0,
             tokens_used=response.usage.total_tokens,
         )
 
@@ -648,10 +664,11 @@ Respond in JSON format:
         changes = await self._identify_changes(client_id, trigger, context)
 
         # 3. Check for duplicate/similar recent insights
+        # Deduplication is PER CLIENT (not per coach-client pair)
         # Deduplication criteria:
-        # - Same insight_type within 7-day window
+        # - Same insight_type within 7-day window for this client
         # - Same triggering metric type (if metric-based trigger)
-        # - Title embedding similarity > 0.85 to pending/approved insights
+        # - Title embedding similarity > 0.85 to pending/approved insights for this client
         #
         # Title Embedding Storage:
         # - insight_generation_log.title_embedding (vector) stores the title embedding
@@ -725,7 +742,7 @@ CREATE TABLE ai_backend.embeddings (
 
     -- Source reference
     source_type VARCHAR(50) NOT NULL,
-    source_id UUID,
+    source_id TEXT NOT NULL,  -- Deterministic composite key (see Source ID Scheme)
     source_table VARCHAR(100),
 
     -- Content
@@ -775,6 +792,13 @@ CREATE TABLE ai_backend.chat_history (
 
 CREATE INDEX idx_chat_history_conversation ON ai_backend.chat_history(conversation_id, created_at);
 CREATE INDEX idx_chat_history_client ON ai_backend.chat_history(client_id, created_at DESC);
+
+-- Chat History Persistence Rules:
+-- 1. Every /chat/complete and /chat/stream call persists both user message and assistant response
+-- 2. If no conversation_id provided, a new UUID is generated and returned in response
+-- 3. Subsequent calls with same conversation_id continue the conversation
+-- 4. sources_used and tokens_used stored for auditing and cost tracking
+-- 5. 90-day retention (see Data Retention section)
 
 -- Insight generation log (for deduplication and analytics)
 CREATE TABLE ai_backend.insight_generation_log (
@@ -879,7 +903,9 @@ All endpoints require:
 | Endpoint | Who Can Access |
 |----------|----------------|
 | POST /chat/complete | Coach (for their clients only) |
+| POST /chat/stream | Coach (for their clients only) |
 | POST /embeddings/update | Coach (for their clients) or System |
+| POST /embeddings/search | Coach (for their clients only) |
 | POST /insights/generate | Coach (for their clients) or System |
 | GET /insights/pending | Coach (sees only their insights) |
 
@@ -974,7 +1000,9 @@ All endpoints require:
 - [ ] Invalid client_id returns 404 (not 403)
 - [ ] All operations logged with coach_id, client_id, timestamp
 - [ ] No PHI in logs or error messages
-- [ ] Rate limiting enforced per coach
+- [ ] Rate limiting: 100 chat requests per coach per hour
+- [ ] Rate limiting: 10 embedding updates per coach per hour
+- [ ] Rate limiting: 50 insight generations per coach per day
 
 ## Test Plan
 
