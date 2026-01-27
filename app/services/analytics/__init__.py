@@ -22,7 +22,16 @@ from app.services.analytics.session_analytics import (
     SessionAnalyticsService,
     get_session_analytics_service,
 )
+from app.services.analytics.client_analytics import (
+    ClientAnalyticsService,
+    get_client_analytics_service,
+)
 from app.services.analytics.talk_time import TalkTimeAnalyzer, TalkTimeMetrics
+from app.services.analytics.trends import (
+    calculate_session_frequency_trend,
+    calculate_talk_ratio_trend,
+    calculate_trend,
+)
 
 __all__ = [
     # Talk-time
@@ -45,4 +54,11 @@ __all__ = [
     # Session analytics
     "SessionAnalyticsService",
     "get_session_analytics_service",
+    # Client analytics
+    "ClientAnalyticsService",
+    "get_client_analytics_service",
+    # Trends
+    "calculate_trend",
+    "calculate_talk_ratio_trend",
+    "calculate_session_frequency_trend",
 ]
