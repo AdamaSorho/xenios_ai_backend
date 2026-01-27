@@ -178,11 +178,12 @@ class ChatResponse(BaseModel):
     sources: list[SourceCitation]
     confidence: float
     has_context: bool  # False when no relevant embeddings found
+    conversation_id: UUID  # For continuity; generated if not provided in request
     tokens_used: int
 
 class SourceCitation(BaseModel):
     source_type: str
-    source_id: UUID
+    source_id: str  # Deterministic composite key (matches EmbeddingRecord.source_id)
     relevance_score: float
     snippet: str  # Relevant excerpt
     date: date | None
@@ -269,10 +270,16 @@ POST /api/v1/chat/stream
     data: {"type": "chunk", "content": "more text..."}
 
     event: done
-    data: {"type": "done", "sources": [...], "confidence": 0.85, "has_context": true, "tokens_used": 1234}
+    data: {"type": "done", "sources": [...], "confidence": 0.85, "has_context": true, "conversation_id": "uuid", "tokens_used": 1234}
 
     event: error (if failure)
     data: {"type": "error", "code": "RETRIEVAL_FAILED", "message": "..."}
+
+  Error Semantics:
+    - RETRIEVAL_FAILED: Vector search timed out or failed; no context available
+    - GENERATION_FAILED: LLM call failed after retry
+    - RATE_LIMITED: Too many requests; include retry_after_seconds
+    - Partial context errors (low relevance) don't fail; proceed with has_context=false
 
 POST /api/v1/embeddings/update
   Request:
@@ -605,6 +612,7 @@ The coach is asking about their client. Respond helpfully using the context abov
             sources=sources,
             confidence=self._calculate_confidence(contexts),
             has_context=len(contexts) > 0,
+            conversation_id=final_conversation_id,
             tokens_used=response.usage.total_tokens,
         )
 
@@ -1004,6 +1012,13 @@ All endpoints require:
 - [ ] Rate limiting: 10 embedding updates per coach per hour
 - [ ] Rate limiting: 50 insight generations per coach per day
 
+### Rate Limiting Implementation
+- **Ownership:** Backend (FastAPI middleware)
+- **Mechanism:** Redis-based sliding window counter
+- **Key format:** `ratelimit:{endpoint}:{coach_id}:{window}`
+- **Response:** 429 Too Many Requests with `Retry-After` header
+- **Bypass:** System/service keys exempt from rate limits
+
 ## Test Plan
 
 ### Unit Tests
@@ -1106,6 +1121,26 @@ All endpoints require:
 - Lab result uploaded (always generates insight)
 - Session completed (if notable changes discussed)
 - Check-in streak milestone (7, 14, 30 days)
+
+**Trigger Mechanism:**
+MVP backend calls AI Backend's `/insights/generate` endpoint when events occur:
+```json
+POST /api/v1/insights/generate
+{
+  "client_id": "uuid",
+  "trigger": "metric_change",
+  "context": {
+    "metric_type": "weight",
+    "old_value": 95.0,
+    "new_value": 93.5,
+    "change_percent": -1.6
+  }
+}
+```
+- MVP is responsible for detecting events and calling this endpoint
+- AI Backend is stateless; does not poll or subscribe to data changes
+- Retry: MVP should retry with exponential backoff on 5xx errors
+- Idempotency: Same trigger + context within 1 hour = duplicate check
 
 **Rate limiting:**
 - Max 3 insights per client per week (regardless of triggers)
