@@ -1,5 +1,36 @@
 """Pydantic schemas for API request/response validation."""
 
+from app.schemas.analytics import (
+    AcknowledgeAlertRequest,
+    AlertListResponse,
+    AlertSeverity,
+    AlertStatus,
+    AlertType,
+    ClientAnalyticsResponse,
+    ClientAnalyticsSummaryResponse,
+    CoachSummaryResponse,
+    ComputeResponse,
+    CueType,
+    DataPoint,
+    LanguageCueResponse,
+    QualityWarning,
+    RiskAlertResponse,
+    RiskDistribution,
+    RiskFactorResponse,
+    RiskLevel,
+    RiskScoreDetailResponse,
+    RiskScoreHistory,
+    RiskScoreResponse,
+    SessionAnalyticsDetailResponse,
+    SessionAnalyticsResponse,
+    SessionAnalyticsSummary,
+    SessionComparison,
+    SessionListResponse,
+    TrendData,
+    TrendDirection,
+    TrendsResponse,
+    WindowType,
+)
 from app.schemas.common import ServiceStatus
 from app.schemas.extraction import (
     DocumentType,
@@ -12,13 +43,46 @@ from app.schemas.extraction import (
 from app.schemas.health import HealthResponse, ReadinessResponse
 
 __all__ = [
+    # Analytics
+    "AcknowledgeAlertRequest",
+    "AlertListResponse",
+    "AlertSeverity",
+    "AlertStatus",
+    "AlertType",
+    "ClientAnalyticsResponse",
+    "ClientAnalyticsSummaryResponse",
+    "CoachSummaryResponse",
+    "ComputeResponse",
+    "CueType",
+    "DataPoint",
+    "LanguageCueResponse",
+    "QualityWarning",
+    "RiskAlertResponse",
+    "RiskDistribution",
+    "RiskFactorResponse",
+    "RiskLevel",
+    "RiskScoreDetailResponse",
+    "RiskScoreHistory",
+    "RiskScoreResponse",
+    "SessionAnalyticsDetailResponse",
+    "SessionAnalyticsResponse",
+    "SessionAnalyticsSummary",
+    "SessionComparison",
+    "SessionListResponse",
+    "TrendData",
+    "TrendDirection",
+    "TrendsResponse",
+    "WindowType",
+    # Extraction
     "DocumentType",
     "ExtractionJobResponse",
     "ExtractionListResponse",
     "ExtractionStatus",
     "ExtractionStatusResponse",
     "ExtractionUploadRequest",
+    # Health
     "HealthResponse",
     "ReadinessResponse",
+    # Common
     "ServiceStatus",
 ]

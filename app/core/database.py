@@ -5,9 +5,15 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
 
 from app.config import get_settings
 from app.core.logging import get_logger
+
+
+class Base(DeclarativeBase):
+    """Base class for SQLAlchemy ORM models."""
+    pass
 
 logger = get_logger(__name__)
 
