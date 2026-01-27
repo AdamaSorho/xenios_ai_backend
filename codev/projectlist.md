@@ -128,12 +128,12 @@ projects:
     status: conceived
     priority: high
     files:
-      spec: null
+      spec: codev/specs/0002-document-extraction-pipeline.md
       plan: null
       review: null
     dependencies: ["0001"]
     tags: [features, extraction, ai]
-    notes: "Depends on foundation; PRD Week 2"
+    notes: "Depends on foundation; PRD Week 2. Spec ready for review."
 
   - id: "0003"
     title: "Transcription & Session Processing"
