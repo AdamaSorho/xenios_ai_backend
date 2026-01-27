@@ -128,8 +128,16 @@ class EmbeddingRecord(BaseModel):
 
     # Source reference
     source_type: str  # health_metric, session_summary, checkin, message, etc.
-    source_id: UUID   # ID in source table
+    source_id: str    # Deterministic ID (see Source ID Scheme below)
     source_table: str # Full table name for joins
+
+# Source ID Scheme:
+# - Single records: UUID from source table (e.g., session_summary.id)
+# - Aggregated records: Deterministic composite key
+#   - health_profile: "{client_id}:profile"
+#   - health_metric_summary: "{client_id}:metric:{metric_type}:{week_start_iso}"
+#   - message_thread: "{client_id}:messages:{date_iso}"
+# This ensures (client_id, source_type, source_id) is always unique
 
     # Content
     content_text: str        # Original text that was embedded
@@ -169,6 +177,7 @@ class ChatResponse(BaseModel):
     response: str
     sources: list[SourceCitation]
     confidence: float
+    has_context: bool  # False when no relevant embeddings found
     tokens_used: int
 
 class SourceCitation(BaseModel):
@@ -251,6 +260,19 @@ POST /api/v1/chat/complete
 POST /api/v1/chat/stream
   Request: Same as /complete
   Response: SSE stream with chunks and final sources
+
+  SSE Event Format:
+    event: chunk
+    data: {"type": "chunk", "content": "partial text..."}
+
+    event: chunk
+    data: {"type": "chunk", "content": "more text..."}
+
+    event: done
+    data: {"type": "done", "sources": [...], "confidence": 0.85, "has_context": true, "tokens_used": 1234}
+
+    event: error (if failure)
+    data: {"type": "error", "code": "RETRIEVAL_FAILED", "message": "..."}
 
 POST /api/v1/embeddings/update
   Request:
@@ -524,6 +546,16 @@ The coach is asking about their client. Respond helpfully using the context abov
     ) -> ChatResponse:
         """Generate grounded response with citations."""
 
+        # 0. Load conversation history if continuing a conversation
+        # Includes last 10 messages from this conversation_id
+        # Used to maintain context across multi-turn conversations
+        conversation_history = []
+        if conversation_id:
+            conversation_history = await self._load_conversation_history(
+                conversation_id=conversation_id,
+                limit=10,  # Last 10 messages
+            )
+
         # 1. Retrieve relevant context
         contexts = await self.retrieval_service.retrieve_context(
             client_id=client_id,
@@ -535,12 +567,19 @@ The coach is asking about their client. Respond helpfully using the context abov
         context_str = self._build_context_string(contexts)
 
         # 3. Generate response
+        # Build messages: system prompt + conversation history + new message
+        messages = [
+            {"role": "system", "content": self.SYSTEM_PROMPT.format(context=context_str)},
+        ]
+        # Add conversation history (alternating user/assistant)
+        for hist_msg in conversation_history:
+            messages.append({"role": hist_msg.role, "content": hist_msg.content})
+        # Add current message
+        messages.append({"role": "user", "content": message})
+
         response = await self.llm_client.complete(
             task="chat",  # Uses Opus 4.5
-            messages=[
-                {"role": "system", "content": self.SYSTEM_PROMPT.format(context=context_str)},
-                {"role": "user", "content": message},
-            ],
+            messages=messages,
         )
 
         # 4. Extract citations from response
@@ -613,6 +652,12 @@ Respond in JSON format:
         # - Same insight_type within 7-day window
         # - Same triggering metric type (if metric-based trigger)
         # - Title embedding similarity > 0.85 to pending/approved insights
+        #
+        # Title Embedding Storage:
+        # - insight_generation_log.title_embedding (vector) stores the title embedding
+        # - Generated at insight creation time using ada-002
+        # - Used for similarity check against last 7 days of insights for this client
+        # - Query: cosine similarity between new title embedding and existing
         if await self._is_duplicate_insight(client_id, changes):
             raise DuplicateInsightError("Similar insight already pending")
 
@@ -742,6 +787,9 @@ CREATE TABLE ai_backend.insight_generation_log (
 
     -- Result
     insight_id UUID,  -- FK to public.insights if generated
+    insight_type VARCHAR(50),
+    title TEXT,
+    title_embedding vector(1536),  -- For deduplication similarity check
     status VARCHAR(20) NOT NULL,  -- generated, duplicate, failed
     error_message TEXT,
 
@@ -754,6 +802,8 @@ CREATE TABLE ai_backend.insight_generation_log (
 );
 
 CREATE INDEX idx_insight_gen_log_client ON ai_backend.insight_generation_log(client_id, created_at DESC);
+CREATE INDEX idx_insight_gen_log_dedup ON ai_backend.insight_generation_log(client_id, insight_type, created_at DESC)
+    WHERE status = 'generated';
 ```
 
 ### Celery Tasks
