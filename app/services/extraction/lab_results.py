@@ -45,6 +45,9 @@ class LabResultsExtractor(BaseExtractor):
     """
     Extract biomarkers from lab result documents.
 
+    Uses configurable document extraction providers (Docling, Reducto, etc.)
+    for PDF extraction, with direct parsing for CSV files.
+
     Supports:
     - Quest Diagnostics PDF and CSV
     - LabCorp PDF and CSV
@@ -133,12 +136,19 @@ class LabResultsExtractor(BaseExtractor):
         "flag": ["flag", "abnormal", "status", "abnormal flag"],
     }
 
-    async def extract(self, file_path: str) -> ExtractionResult:
+    async def extract(
+        self,
+        file_path: str,
+        provider: str | None = None,
+    ) -> ExtractionResult:
         """
         Extract biomarkers from lab results file.
 
         Args:
             file_path: Path to the lab results file (PDF or CSV)
+            provider: Optional provider name ("docling", "reducto").
+                     If not specified, uses the configured default.
+                     Only applicable for PDF files.
 
         Returns:
             ExtractionResult with LabResultsData or errors
@@ -149,7 +159,7 @@ class LabResultsExtractor(BaseExtractor):
         ext = Path(file_path).suffix.lower()
 
         if ext == ".pdf":
-            return await self._extract_from_pdf(file_path, start_time)
+            return await self._extract_from_pdf(file_path, start_time, provider)
         elif ext == ".csv":
             return await self._extract_from_csv(file_path, start_time)
         else:
@@ -162,19 +172,34 @@ class LabResultsExtractor(BaseExtractor):
                 extraction_time_ms=int((time.time() - start_time) * 1000),
             )
 
-    async def _extract_from_pdf(self, file_path: str, start_time: float) -> ExtractionResult:
-        """Extract biomarkers from PDF using Docling."""
+    async def _extract_from_pdf(
+        self,
+        file_path: str,
+        start_time: float,
+        provider: str | None = None,
+    ) -> ExtractionResult:
+        """Extract biomarkers from PDF using configurable provider."""
+        from app.services.extraction.providers import get_provider
+
         errors: list[str] = []
         warnings: list[str] = []
+        used_provider = provider
 
         try:
-            from docling.document_converter import DocumentConverter
+            # Get document extraction provider
+            doc_provider = get_provider(provider)
+            used_provider = doc_provider.name
+            logger.info(
+                "Using extraction provider",
+                provider=used_provider,
+                file_path=file_path,
+            )
 
-            converter = DocumentConverter()
-            result = converter.convert(file_path)
+            # Extract document content using provider
+            content = await doc_provider.extract(Path(file_path))
 
-            # Get all text content
-            full_text = self._get_full_text(result)
+            # Use markdown content if available, fallback to plain text
+            full_text = content.markdown or content.text
 
             if not full_text:
                 return ExtractionResult(
@@ -184,6 +209,7 @@ class LabResultsExtractor(BaseExtractor):
                     errors=["Could not extract text from PDF"],
                     warnings=[],
                     extraction_time_ms=int((time.time() - start_time) * 1000),
+                    metadata={"provider": used_provider},
                 )
 
             # Detect lab provider
@@ -226,19 +252,25 @@ class LabResultsExtractor(BaseExtractor):
                 errors=errors,
                 warnings=warnings,
                 extraction_time_ms=int((time.time() - start_time) * 1000),
+                metadata={"provider": used_provider},
             )
 
-        except ImportError:
-            return ExtractionResult(
-                success=False,
-                data=None,
-                confidence=0.0,
-                errors=["Docling library not available"],
-                warnings=[],
-                extraction_time_ms=int((time.time() - start_time) * 1000),
-            )
         except Exception as e:
-            logger.error("Lab results PDF extraction failed", error=str(e), exc_info=True)
+            logger.error(
+                "Lab results PDF extraction failed",
+                error=str(e),
+                provider=used_provider,
+                exc_info=True,
+            )
+
+            # Try fallback to docling if we were using a different provider
+            if provider and provider.lower() != "docling":
+                logger.info("Attempting fallback to docling provider")
+                try:
+                    return await self._extract_from_pdf(file_path, start_time, provider="docling")
+                except Exception as fallback_error:
+                    logger.error("Fallback extraction also failed", error=str(fallback_error))
+
             return ExtractionResult(
                 success=False,
                 data=None,
@@ -246,12 +278,11 @@ class LabResultsExtractor(BaseExtractor):
                 errors=[f"Extraction error: {str(e)}"],
                 warnings=[],
                 extraction_time_ms=int((time.time() - start_time) * 1000),
+                metadata={"provider": used_provider or "unknown"},
             )
 
     async def _extract_from_csv(self, file_path: str, start_time: float) -> ExtractionResult:
-        """Extract biomarkers from CSV file."""
-        import time
-
+        """Extract biomarkers from CSV file (no provider needed)."""
         errors: list[str] = []
         warnings: list[str] = []
 
@@ -274,6 +305,7 @@ class LabResultsExtractor(BaseExtractor):
                     errors=["CSV file is empty"],
                     warnings=[],
                     extraction_time_ms=int((time.time() - start_time) * 1000),
+                    metadata={"provider": "csv_parser"},
                 )
 
             # Map column names to standard names
@@ -287,6 +319,7 @@ class LabResultsExtractor(BaseExtractor):
                     errors=["Could not identify name and value columns in CSV"],
                     warnings=[],
                     extraction_time_ms=int((time.time() - start_time) * 1000),
+                    metadata={"provider": "csv_parser"},
                 )
 
             # Extract biomarkers
@@ -361,6 +394,7 @@ class LabResultsExtractor(BaseExtractor):
                 errors=errors,
                 warnings=warnings,
                 extraction_time_ms=int((time.time() - start_time) * 1000),
+                metadata={"provider": "csv_parser"},
             )
 
         except Exception as e:
@@ -372,6 +406,7 @@ class LabResultsExtractor(BaseExtractor):
                 errors=[f"CSV parsing error: {str(e)}"],
                 warnings=[],
                 extraction_time_ms=int((time.time() - start_time) * 1000),
+                metadata={"provider": "csv_parser"},
             )
 
     def validate(self, data: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -394,37 +429,6 @@ class LabResultsExtractor(BaseExtractor):
                 errors.append(f"Unreasonable value for {name}: {value}")
 
         return len(errors) == 0, errors
-
-    def _get_full_text(self, docling_result: Any) -> str:
-        """Extract all text from Docling result."""
-        texts: list[str] = []
-
-        if hasattr(docling_result, "document"):
-            doc = docling_result.document
-
-            if hasattr(doc, "texts"):
-                for text_block in doc.texts:
-                    if hasattr(text_block, "text"):
-                        texts.append(text_block.text)
-
-            if hasattr(doc, "tables"):
-                for table in doc.tables:
-                    if hasattr(table, "to_text"):
-                        texts.append(table.to_text())
-                    elif hasattr(table, "cells"):
-                        for row in table.cells:
-                            for cell in row:
-                                if hasattr(cell, "text"):
-                                    texts.append(cell.text)
-
-        if not texts and hasattr(docling_result, "document"):
-            try:
-                md = docling_result.document.export_to_markdown()
-                texts.append(md)
-            except Exception:
-                pass
-
-        return "\n".join(texts)
 
     def _detect_provider(self, text: str) -> str | None:
         """Detect lab provider from text."""

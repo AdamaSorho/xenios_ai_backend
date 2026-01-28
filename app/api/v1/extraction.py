@@ -4,7 +4,7 @@ import os
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
 
 from app.config import get_settings
 from app.core.auth import UserContext, get_current_user
@@ -73,6 +73,10 @@ async def upload_document(
         str | None,
         Form(description="Optional webhook URL for completion notification"),
     ] = None,
+    x_extraction_provider: Annotated[
+        str | None,
+        Header(description="Extraction provider to use (docling, reducto)"),
+    ] = None,
     user: UserContext = Depends(get_current_user),
     db=Depends(get_db_session),
 ) -> ExtractionJobResponse:
@@ -81,6 +85,10 @@ async def upload_document(
 
     Accepts PDF, CSV, JSON, or XML files up to 50MB.
     Returns a job ID immediately. Poll /status/{job_id} for results.
+
+    **Headers:**
+    - `X-Extraction-Provider`: Optional. Extraction provider to use ("docling", "reducto").
+      If not specified, uses the configured default (typically "docling").
 
     Document types:
     - **inbody**: InBody body composition scan (PDF)
@@ -146,18 +154,32 @@ async def upload_document(
         webhook_url,
     )
 
+    # Validate and normalize provider header
+    valid_providers = {"docling", "reducto"}
+    provider = None
+    if x_extraction_provider:
+        normalized = x_extraction_provider.lower().strip()
+        if normalized in valid_providers:
+            provider = normalized
+        else:
+            logger.warning(
+                "Invalid extraction provider requested, using default",
+                requested=x_extraction_provider,
+            )
+
     logger.info(
         "Extraction job created",
         job_id=str(row["id"]),
         client_id=str(client_id),
         document_type=detected_type,
         file_size=len(content),
+        provider=provider,
     )
 
     # Queue Celery task
     from app.workers.tasks.extraction import process_extraction
 
-    process_extraction.delay(str(row["id"]))
+    process_extraction.delay(str(row["id"]), provider=provider)
 
     return ExtractionJobResponse(
         id=row["id"],
@@ -307,6 +329,10 @@ async def list_extraction_jobs(
 async def reprocess_extraction(
     job_id: UUID,
     request: ExtractionReprocessRequest | None = None,
+    x_extraction_provider: Annotated[
+        str | None,
+        Header(description="Extraction provider to use (docling, reducto)"),
+    ] = None,
     user: UserContext = Depends(get_current_user),
     db=Depends(get_db_session),
 ) -> ExtractionJobResponse:
@@ -315,8 +341,20 @@ async def reprocess_extraction(
 
     By default, only failed jobs can be reprocessed.
     Use force=true to reprocess any job.
+
+    **Headers:**
+    - `X-Extraction-Provider`: Optional. Extraction provider to use ("docling", "reducto").
+      Useful for retrying with a different provider after failure.
     """
     force = request.force if request else False
+
+    # Validate and normalize provider header
+    valid_providers = {"docling", "reducto"}
+    provider = None
+    if x_extraction_provider:
+        normalized = x_extraction_provider.lower().strip()
+        if normalized in valid_providers:
+            provider = normalized
 
     # Get job
     query = """
@@ -362,12 +400,13 @@ async def reprocess_extraction(
         "Extraction job requeued",
         job_id=str(job_id),
         retry_count=row["retry_count"] + 1,
+        provider=provider,
     )
 
     # Queue Celery task
     from app.workers.tasks.extraction import process_extraction
 
-    process_extraction.delay(str(job_id))
+    process_extraction.delay(str(job_id), provider=provider)
 
     return ExtractionJobResponse(
         id=row["id"],
