@@ -178,14 +178,15 @@ projects:
   - id: "0006"
     title: "Multi-Provider LLM Support"
     summary: "Add direct Claude API alongside OpenRouter with runtime provider selection via request headers"
-    status: implementing
+    status: committed
     priority: medium
     files:
       spec: codev/specs/0006-multi-provider-llm.md
       plan: codev/plans/0006-multi-provider-llm.md
+      review: codev/reviews/0006-multi-provider-llm.md
     dependencies: ["0001"]
     tags: [features, llm, architecture]
-    notes: "Builder spawned 2025-01-28. Branch: builder/0006-multi-provider-llm"
+    notes: "PR #8 merged 2025-01-28. Ready for production validation."
 
   - id: "0007"
     title: "Multi-Provider Document Extraction"
