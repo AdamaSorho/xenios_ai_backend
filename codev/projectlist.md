@@ -190,10 +190,11 @@ projects:
   - id: "0007"
     title: "Multi-Provider Document Extraction"
     summary: "Add Reducto.ai alongside Docling with runtime provider selection via request headers"
-    status: conceived
+    status: planned
     priority: medium
     files:
       spec: codev/specs/0007-multi-provider-extraction.md
+      plan: codev/plans/0007-multi-provider-extraction.md
     dependencies: ["0002"]
     tags: [features, extraction, architecture]
     notes: "Allows clients to choose between Docling (local) and Reducto.ai (cloud)"
