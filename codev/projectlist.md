@@ -191,14 +191,15 @@ projects:
   - id: "0007"
     title: "Multi-Provider Document Extraction"
     summary: "Add Reducto.ai alongside Docling with runtime provider selection via request headers"
-    status: implementing
+    status: committed
     priority: medium
     files:
       spec: codev/specs/0007-multi-provider-extraction.md
       plan: codev/plans/0007-multi-provider-extraction.md
+      review: codev/reviews/0007-multi-provider-extraction.md
     dependencies: ["0002"]
     tags: [features, extraction, architecture]
-    notes: "Builder spawned 2025-01-28. Branch: builder/0007-multi-provider-extraction"
+    notes: "PR #9 merged 2025-01-28. Ready for production validation."
 
 ## Next Available Number
 
