@@ -30,7 +30,9 @@ class Settings(BaseSettings):
     xenios_backend_api_key: str
 
     # LLM Providers
-    openrouter_api_key: str
+    openrouter_api_key: str = ""
+    anthropic_api_key: str = ""
+    llm_default_provider: str = "openrouter"  # Options: openrouter, anthropic
     openai_api_key: str = ""  # For embeddings (ada-002)
 
     # External Services

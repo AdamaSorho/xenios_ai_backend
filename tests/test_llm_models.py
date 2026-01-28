@@ -51,26 +51,27 @@ class TestTaskModels:
             "chat",
             "intent_classification",
             "entity_extraction",
+            "cue_detection",
         ]
 
         for task in expected_tasks:
             assert task in TASK_MODELS, f"Task '{task}' not found in TASK_MODELS"
 
-    def test_get_model_for_task(self):
+    def test_get_task_config(self):
         """Test getting model config for a valid task."""
-        from app.services.llm.models import get_model_for_task
+        from app.services.llm.models import get_task_config
 
-        config = get_model_for_task("chat")
+        config = get_task_config("chat")
 
-        assert config.primary == "anthropic/claude-opus-4-20250514"
+        assert config.temperature == 0.7
         assert config.streaming is True
 
-    def test_get_model_for_unknown_task_raises(self):
+    def test_get_task_config_for_unknown_task_raises(self):
         """Test that unknown task raises ValueError."""
-        from app.services.llm.models import get_model_for_task
+        from app.services.llm.models import get_task_config
 
         with pytest.raises(ValueError) as exc_info:
-            get_model_for_task("unknown_task")
+            get_task_config("unknown_task")
 
         assert "Unknown task: unknown_task" in str(exc_info.value)
 
@@ -125,3 +126,79 @@ class TestModelRouting:
 
         config = TASK_MODELS["chat"]
         assert config.streaming is True
+
+
+class TestProviderModelMappings:
+    """Tests for per-provider model mappings."""
+
+    def test_openrouter_models_defined(self):
+        """Test that OpenRouter model mappings are defined for all tasks."""
+        from app.services.llm.models import OPENROUTER_MODELS, TASK_MODELS
+
+        for task in TASK_MODELS:
+            assert task in OPENROUTER_MODELS, f"Task '{task}' missing from OPENROUTER_MODELS"
+
+    def test_anthropic_models_defined(self):
+        """Test that Anthropic model mappings are defined for all tasks."""
+        from app.services.llm.models import ANTHROPIC_MODELS, TASK_MODELS
+
+        for task in TASK_MODELS:
+            assert task in ANTHROPIC_MODELS, f"Task '{task}' missing from ANTHROPIC_MODELS"
+
+    def test_openrouter_models_have_provider_prefix(self):
+        """Test that OpenRouter models use provider/model format."""
+        from app.services.llm.models import OPENROUTER_MODELS
+
+        for task, model in OPENROUTER_MODELS.items():
+            assert "/" in model, f"OpenRouter model for '{task}' should have provider prefix"
+
+    def test_anthropic_models_no_provider_prefix(self):
+        """Test that Anthropic models don't have provider prefix."""
+        from app.services.llm.models import ANTHROPIC_MODELS
+
+        for task, model in ANTHROPIC_MODELS.items():
+            # Anthropic models should start with 'claude-'
+            assert model.startswith("claude-"), f"Anthropic model for '{task}' should be direct model name"
+
+    def test_get_model_for_task_openrouter(self):
+        """Test getting model for task with OpenRouter provider."""
+        from app.services.llm.models import get_model_for_task
+
+        model = get_model_for_task("chat", "openrouter")
+
+        assert model == "anthropic/claude-opus-4-20250514"
+
+    def test_get_model_for_task_anthropic(self):
+        """Test getting model for task with Anthropic provider."""
+        from app.services.llm.models import get_model_for_task
+
+        model = get_model_for_task("chat", "anthropic")
+
+        assert model == "claude-opus-4-20250514"
+
+    def test_get_model_for_task_default_provider(self):
+        """Test getting model for task with no provider (defaults to OpenRouter)."""
+        from app.services.llm.models import get_model_for_task
+
+        model = get_model_for_task("chat")
+
+        assert model == "anthropic/claude-opus-4-20250514"
+
+    def test_get_model_for_task_unknown_provider_fallback(self):
+        """Test that unknown provider falls back to OpenRouter."""
+        from app.services.llm.models import get_model_for_task
+
+        model = get_model_for_task("chat", "unknown_provider")
+
+        assert model == "anthropic/claude-opus-4-20250514"
+
+    def test_cue_detection_differs_by_provider(self):
+        """Test that cue_detection uses different models per provider."""
+        from app.services.llm.models import get_model_for_task
+
+        openrouter_model = get_model_for_task("cue_detection", "openrouter")
+        anthropic_model = get_model_for_task("cue_detection", "anthropic")
+
+        # OpenRouter uses GPT-4o-mini, Anthropic uses Sonnet as fallback
+        assert "gpt-4o-mini" in openrouter_model
+        assert "claude-sonnet" in anthropic_model

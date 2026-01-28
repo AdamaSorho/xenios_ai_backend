@@ -42,10 +42,14 @@ class ChatService:
         "message_thread",
     ]
 
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        llm_client: LLMClient | None = None,
+    ) -> None:
         self.db = db
         self.retrieval_service = RetrievalService(db)
-        self.llm_client = LLMClient()
+        self.llm_client = llm_client or LLMClient()
         self.settings = get_settings()
 
         # Token counting for context window management

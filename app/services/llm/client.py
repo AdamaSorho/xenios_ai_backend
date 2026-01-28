@@ -1,4 +1,4 @@
-"""OpenRouter LLM client with model routing and streaming support."""
+"""Multi-provider LLM client with task-based model routing and streaming support."""
 
 import json
 from collections.abc import AsyncIterator
@@ -6,9 +6,12 @@ from typing import Any
 
 import httpx
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.core.logging import get_logger
-from app.services.llm.models import ModelConfig, get_model_for_task
+from app.services.llm.models import get_model_for_task, get_task_config
+from app.services.llm.providers.anthropic import AnthropicProvider
+from app.services.llm.providers.base import LLMProvider
+from app.services.llm.providers.openrouter import OpenRouterProvider
 
 logger = get_logger(__name__)
 
@@ -24,189 +27,297 @@ class LLMError(Exception):
 
 class LLMClient:
     """
-    Client for OpenRouter API with task-based model routing.
+    Multi-provider LLM client with task-based model routing.
 
-    Supports both synchronous completions and streaming responses.
-    Automatically falls back to secondary model on primary failure.
+    Supports multiple LLM providers (OpenRouter, Anthropic) with runtime
+    provider selection via header or configuration. Provides automatic
+    fallback when the preferred provider fails.
     """
 
-    BASE_URL = "https://openrouter.ai/api/v1"
-    DEFAULT_TIMEOUT = 60.0
-    STREAM_TIMEOUT = 120.0
-
-    def __init__(self) -> None:
-        self.settings = get_settings()
-
-    def _get_headers(self) -> dict[str, str]:
-        """Get headers for OpenRouter API requests."""
-        return {
-            "Authorization": f"Bearer {self.settings.openrouter_api_key}",
-            "HTTP-Referer": "https://xenios.app",
-            "X-Title": "Xenios AI Backend",
-            "Content-Type": "application/json",
-        }
-
-    def _build_request_body(
+    def __init__(
         self,
-        model: str,
-        messages: list[dict[str, Any]],
-        config: ModelConfig,
-        stream: bool = False,
-    ) -> dict[str, Any]:
-        """Build the request body for OpenRouter API."""
-        return {
-            "model": model,
-            "messages": messages,
-            "temperature": config.temperature,
-            "max_tokens": config.max_tokens,
-            "stream": stream,
-        }
+        provider: str | None = None,
+        settings: Settings | None = None,
+    ) -> None:
+        """
+        Initialize the LLM client.
+
+        Args:
+            provider: Override the default provider ('openrouter' or 'anthropic')
+            settings: Optional settings instance (defaults to global settings)
+        """
+        self._settings = settings or get_settings()
+        self._default_provider = provider or self._settings.llm_default_provider
+        self._providers = self._init_providers()
+
+    def _init_providers(self) -> dict[str, LLMProvider]:
+        """Initialize available providers based on configuration."""
+        providers: dict[str, LLMProvider] = {}
+
+        if self._settings.openrouter_api_key:
+            providers["openrouter"] = OpenRouterProvider(
+                self._settings.openrouter_api_key
+            )
+
+        if self._settings.anthropic_api_key:
+            providers["anthropic"] = AnthropicProvider(
+                self._settings.anthropic_api_key
+            )
+
+        return providers
+
+    def get_provider(self, name: str | None = None) -> LLMProvider:
+        """
+        Get provider by name, falling back to default or any available.
+
+        Args:
+            name: Provider name ('openrouter' or 'anthropic')
+
+        Returns:
+            The requested LLMProvider instance
+
+        Raises:
+            LLMError: If no providers are configured
+        """
+        provider_name = name or self._default_provider
+
+        if provider_name not in self._providers:
+            # Fallback to any available provider
+            if self._providers:
+                fallback_name = next(iter(self._providers))
+                logger.warning(
+                    "Requested provider not available, using fallback",
+                    requested=provider_name,
+                    fallback=fallback_name,
+                )
+                provider_name = fallback_name
+            else:
+                raise LLMError("No LLM providers configured")
+
+        return self._providers[provider_name]
+
+    @property
+    def available_providers(self) -> list[str]:
+        """Return list of available provider names."""
+        return list(self._providers.keys())
 
     async def complete(
         self,
         task: str,
         messages: list[dict[str, Any]],
-        use_fallback: bool = False,
+        provider: str | None = None,
+        use_fallback: bool = True,
     ) -> dict[str, Any]:
         """
-        Send a completion request to OpenRouter.
+        Send a completion request with optional provider override and fallback.
 
         Args:
             task: The task type for model selection
             messages: List of message dicts with 'role' and 'content'
-            use_fallback: If True, use fallback model instead of primary
+            provider: Optional provider override ('openrouter' or 'anthropic')
+            use_fallback: If True, try other providers on failure
 
         Returns:
-            OpenRouter API response as dict
+            Normalized API response as dict (OpenAI-compatible format)
 
         Raises:
-            LLMError: On API errors after exhausting retries
+            LLMError: On API errors after exhausting all providers
         """
-        config = get_model_for_task(task)
-        model = config.fallback if use_fallback else config.primary
+        provider_name = provider or self._default_provider
+        llm_provider = self.get_provider(provider_name)
+        actual_provider_name = llm_provider.name
+
+        model = get_model_for_task(task, actual_provider_name)
+        config = get_task_config(task)
 
         logger.info(
             "Sending LLM completion request",
             task=task,
             model=model,
+            provider=actual_provider_name,
             message_count=len(messages),
-            use_fallback=use_fallback,
         )
 
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.post(
-                    f"{self.BASE_URL}/chat/completions",
-                    headers=self._get_headers(),
-                    json=self._build_request_body(model, messages, config),
-                    timeout=self.DEFAULT_TIMEOUT,
-                )
-                response.raise_for_status()
+        try:
+            result = await llm_provider.complete(
+                model=model,
+                messages=messages,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+            )
+            logger.info(
+                "LLM completion successful",
+                task=task,
+                model=model,
+                provider=actual_provider_name,
+                usage=result.get("usage"),
+            )
+            return result
 
-                result = response.json()
-                logger.info(
-                    "LLM completion successful",
-                    task=task,
+        except httpx.HTTPStatusError as e:
+            logger.warning(
+                "LLM request failed",
+                task=task,
+                model=model,
+                provider=actual_provider_name,
+                status_code=e.response.status_code,
+                error=str(e),
+            )
+
+            if use_fallback:
+                return await self._try_fallback(
+                    task, messages, actual_provider_name, e
+                )
+
+            raise LLMError(
+                f"LLM request failed: {e}",
+                status_code=e.response.status_code,
+            ) from None
+
+        except Exception as e:
+            logger.error(
+                "LLM request error",
+                task=task,
+                provider=actual_provider_name,
+                error=str(e),
+            )
+
+            if use_fallback:
+                return await self._try_fallback(
+                    task, messages, actual_provider_name, e
+                )
+
+            raise LLMError(f"LLM request error: {e}") from None
+
+    async def _try_fallback(
+        self,
+        task: str,
+        messages: list[dict[str, Any]],
+        failed_provider: str,
+        original_error: Exception,
+    ) -> dict[str, Any]:
+        """Try other providers as fallback."""
+        tried_providers = [failed_provider]
+
+        for name, llm_provider in self._providers.items():
+            if name == failed_provider:
+                continue
+
+            tried_providers.append(name)
+            logger.info(
+                "Trying fallback provider",
+                task=task,
+                provider=name,
+                failed_provider=failed_provider,
+            )
+
+            try:
+                model = get_model_for_task(task, name)
+                config = get_task_config(task)
+                result = await llm_provider.complete(
                     model=model,
-                    usage=result.get("usage"),
+                    messages=messages,
+                    temperature=config.temperature,
+                    max_tokens=config.max_tokens,
+                )
+                logger.info(
+                    "Fallback provider succeeded",
+                    task=task,
+                    provider=name,
                 )
                 return result
-
-            except httpx.HTTPStatusError as e:
+            except Exception as e:
                 logger.warning(
-                    "LLM request failed",
+                    "Fallback provider failed",
                     task=task,
-                    model=model,
-                    status_code=e.response.status_code,
+                    provider=name,
                     error=str(e),
                 )
+                continue
 
-                # Try fallback model if not already using it
-                if not use_fallback:
-                    logger.info("Retrying with fallback model", fallback=config.fallback)
-                    return await self.complete(task, messages, use_fallback=True)
-
-                raise LLMError(
-                    f"LLM request failed: {e}",
-                    status_code=e.response.status_code,
-                ) from None
-
-            except httpx.RequestError as e:
-                logger.error("LLM request error", task=task, error=str(e))
-
-                if not use_fallback:
-                    return await self.complete(task, messages, use_fallback=True)
-
-                raise LLMError(f"LLM request error: {e}") from None
+        raise LLMError(
+            f"All providers failed. Tried: {', '.join(tried_providers)}. "
+            f"Original error: {original_error}"
+        )
 
     async def stream(
         self,
         task: str,
         messages: list[dict[str, Any]],
+        provider: str | None = None,
     ) -> AsyncIterator[str]:
         """
-        Stream a completion response from OpenRouter.
+        Stream a completion response from the LLM.
 
         Args:
             task: The task type for model selection
             messages: List of message dicts with 'role' and 'content'
+            provider: Optional provider override
 
         Yields:
-            SSE data lines from the streaming response
+            SSE data lines (JSON strings) from the streaming response
 
         Raises:
             LLMError: On API errors
         """
-        config = get_model_for_task(task)
-        model = config.primary
+        provider_name = provider or self._default_provider
+        llm_provider = self.get_provider(provider_name)
+        actual_provider_name = llm_provider.name
+
+        model = get_model_for_task(task, actual_provider_name)
+        config = get_task_config(task)
 
         logger.info(
             "Starting LLM stream request",
             task=task,
             model=model,
+            provider=actual_provider_name,
             message_count=len(messages),
         )
 
-        async with httpx.AsyncClient() as client:
-            try:
-                async with client.stream(
-                    "POST",
-                    f"{self.BASE_URL}/chat/completions",
-                    headers=self._get_headers(),
-                    json=self._build_request_body(model, messages, config, stream=True),
-                    timeout=self.STREAM_TIMEOUT,
-                ) as response:
-                    response.raise_for_status()
+        try:
+            async for chunk in llm_provider.stream(
+                model=model,
+                messages=messages,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+            ):
+                yield chunk
 
-                    async for line in response.aiter_lines():
-                        if line.startswith("data: "):
-                            data = line[6:]  # Remove "data: " prefix
-                            if data == "[DONE]":
-                                break
-                            yield data
+            logger.info(
+                "LLM stream completed",
+                task=task,
+                model=model,
+                provider=actual_provider_name,
+            )
 
-                logger.info("LLM stream completed", task=task, model=model)
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "LLM stream failed",
+                task=task,
+                model=model,
+                provider=actual_provider_name,
+                status_code=e.response.status_code,
+            )
+            raise LLMError(
+                f"LLM stream failed: {e}",
+                status_code=e.response.status_code,
+            ) from None
 
-            except httpx.HTTPStatusError as e:
-                logger.error(
-                    "LLM stream failed",
-                    task=task,
-                    model=model,
-                    status_code=e.response.status_code,
-                )
-                raise LLMError(
-                    f"LLM stream failed: {e}",
-                    status_code=e.response.status_code,
-                ) from None
-
-            except httpx.RequestError as e:
-                logger.error("LLM stream error", task=task, error=str(e))
-                raise LLMError(f"LLM stream error: {e}") from None
+        except Exception as e:
+            logger.error(
+                "LLM stream error",
+                task=task,
+                provider=actual_provider_name,
+                error=str(e),
+            )
+            raise LLMError(f"LLM stream error: {e}") from None
 
     async def complete_with_json(
         self,
         task: str,
         messages: list[dict[str, Any]],
+        provider: str | None = None,
     ) -> dict[str, Any]:
         """
         Send a completion and parse the response as JSON.
@@ -216,6 +327,7 @@ class LLMClient:
         Args:
             task: The task type for model selection
             messages: List of message dicts
+            provider: Optional provider override
 
         Returns:
             Parsed JSON from the completion content
@@ -223,7 +335,7 @@ class LLMClient:
         Raises:
             LLMError: On API or parsing errors
         """
-        result = await self.complete(task, messages)
+        result = await self.complete(task, messages, provider=provider)
 
         try:
             content = result["choices"][0]["message"]["content"]

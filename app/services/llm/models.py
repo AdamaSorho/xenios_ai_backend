@@ -1,4 +1,4 @@
-"""LLM model configuration for task-based routing."""
+"""LLM model configuration for task-based routing with multi-provider support."""
 
 from pydantic import BaseModel
 
@@ -59,7 +59,59 @@ TASK_MODELS: dict[str, ModelConfig] = {
 }
 
 
-def get_model_for_task(task: str) -> ModelConfig:
+# Per-provider model name mappings
+# OpenRouter uses "provider/model" format
+OPENROUTER_MODELS: dict[str, str] = {
+    "chat": "anthropic/claude-opus-4-20250514",
+    "session_summary": "anthropic/claude-opus-4-20250514",
+    "insight_generation": "anthropic/claude-opus-4-20250514",
+    "intent_classification": "anthropic/claude-sonnet-4-20250514",
+    "entity_extraction": "anthropic/claude-sonnet-4-20250514",
+    "cue_detection": "openai/gpt-4o-mini",
+}
+
+# Anthropic uses direct model names without provider prefix
+ANTHROPIC_MODELS: dict[str, str] = {
+    "chat": "claude-opus-4-20250514",
+    "session_summary": "claude-opus-4-20250514",
+    "insight_generation": "claude-opus-4-20250514",
+    "intent_classification": "claude-sonnet-4-20250514",
+    "entity_extraction": "claude-sonnet-4-20250514",
+    "cue_detection": "claude-sonnet-4-20250514",  # Fallback - no GPT on Anthropic
+}
+
+# Provider to models mapping
+PROVIDER_MODELS: dict[str, dict[str, str]] = {
+    "openrouter": OPENROUTER_MODELS,
+    "anthropic": ANTHROPIC_MODELS,
+}
+
+
+def get_model_for_task(task: str, provider: str | None = None) -> str:
+    """
+    Get the appropriate model name for a task and provider.
+
+    Args:
+        task: The task type (e.g., 'chat', 'session_summary')
+        provider: The provider name ('openrouter' or 'anthropic')
+                  If None, returns the OpenRouter model name for backward compatibility
+
+    Returns:
+        Model name string appropriate for the specified provider
+
+    Raises:
+        ValueError: If the task type is unknown
+    """
+    if task not in TASK_MODELS:
+        available_tasks = ", ".join(sorted(TASK_MODELS.keys()))
+        raise ValueError(f"Unknown task: {task}. Available tasks: {available_tasks}")
+
+    # Get provider-specific model mapping
+    models = PROVIDER_MODELS.get(provider or "openrouter", OPENROUTER_MODELS)
+    return models.get(task, models.get("chat", ""))
+
+
+def get_task_config(task: str) -> ModelConfig:
     """
     Get the model configuration for a specific task.
 
@@ -67,7 +119,7 @@ def get_model_for_task(task: str) -> ModelConfig:
         task: The task type (e.g., 'chat', 'session_summary')
 
     Returns:
-        ModelConfig with primary/fallback model settings
+        ModelConfig with temperature, max_tokens, and other settings
 
     Raises:
         ValueError: If the task type is unknown

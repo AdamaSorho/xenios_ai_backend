@@ -9,6 +9,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.core.auth import UserContext, get_current_user
 from app.core.logging import get_logger
+from app.dependencies import LLMClientDep
 from app.schemas.llm import (
     AvailableTasksResponse,
     EntityExtractionRequest,
@@ -19,7 +20,7 @@ from app.schemas.llm import (
     LLMCompleteResponse,
     LLMStreamRequest,
 )
-from app.services.llm import LLMClient, LLMError, list_available_tasks
+from app.services.llm import LLMError, list_available_tasks
 from app.services.llm.prompts import (
     build_entity_extraction_messages,
     build_intent_classification_messages,
@@ -44,12 +45,17 @@ async def get_available_tasks() -> AvailableTasksResponse:
 async def llm_complete(
     request: LLMCompleteRequest,
     user: Annotated[UserContext, Depends(get_current_user)],
+    client: LLMClientDep,
 ) -> LLMCompleteResponse:
     """
     Send a completion request to the LLM.
 
     Requires authentication with both API key and JWT.
     The model is automatically selected based on the task type.
+
+    Use the X-LLM-Provider header to override the default provider:
+    - X-LLM-Provider: openrouter (default)
+    - X-LLM-Provider: anthropic
     """
     logger.info(
         "LLM complete request",
@@ -58,7 +64,6 @@ async def llm_complete(
     )
 
     try:
-        client = LLMClient()
         messages = [{"role": m.role, "content": m.content} for m in request.messages]
         result = await client.complete(request.task, messages)
         return LLMCompleteResponse(**result)
@@ -81,12 +86,17 @@ async def llm_complete(
 async def llm_stream(
     request: LLMStreamRequest,
     user: Annotated[UserContext, Depends(get_current_user)],
+    client: LLMClientDep,
 ) -> EventSourceResponse:
     """
     Stream a completion response from the LLM using Server-Sent Events.
 
     Requires authentication with both API key and JWT.
     Returns an SSE stream of completion chunks.
+
+    Use the X-LLM-Provider header to override the default provider:
+    - X-LLM-Provider: openrouter (default)
+    - X-LLM-Provider: anthropic
     """
     logger.info(
         "LLM stream request",
@@ -96,7 +106,6 @@ async def llm_stream(
 
     async def event_generator() -> AsyncIterator[dict]:
         try:
-            client = LLMClient()
             messages = [{"role": m.role, "content": m.content} for m in request.messages]
 
             async for chunk in client.stream(request.task, messages):
@@ -116,11 +125,14 @@ async def llm_stream(
 async def classify_intent(
     request: IntentClassificationRequest,
     user: Annotated[UserContext, Depends(get_current_user)],
+    client: LLMClientDep,
 ) -> IntentClassificationResponse:
     """
     Classify the intent of a message.
 
     Uses the intent_classification task type with deterministic temperature.
+
+    Use the X-LLM-Provider header to override the default provider.
     """
     logger.info(
         "Intent classification request",
@@ -129,7 +141,6 @@ async def classify_intent(
     )
 
     try:
-        client = LLMClient()
         messages = build_intent_classification_messages(request.message, request.intents)
         result = await client.complete_with_json("intent_classification", messages)
 
@@ -150,11 +161,14 @@ async def classify_intent(
 async def extract_entities(
     request: EntityExtractionRequest,
     user: Annotated[UserContext, Depends(get_current_user)],
+    client: LLMClientDep,
 ) -> EntityExtractionResponse:
     """
     Extract entities from text.
 
     Uses the entity_extraction task type with deterministic temperature.
+
+    Use the X-LLM-Provider header to override the default provider.
     """
     logger.info(
         "Entity extraction request",
@@ -163,7 +177,6 @@ async def extract_entities(
     )
 
     try:
-        client = LLMClient()
         messages = build_entity_extraction_messages(request.text, request.entity_types)
         result = await client.complete_with_json("entity_extraction", messages)
 
