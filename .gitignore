@@ -92,6 +92,8 @@ docker-compose.override.yml
 *.retry
 # Encrypted vault files should be committed, but not decrypted versions
 infrastructure/inventory/group_vars/*.decrypted.yml
+# Unencrypted secrets - MUST be encrypted before committing
+infrastructure/ansible/group_vars/xenios.yml
 
 # =============================================================================
 # Logs
