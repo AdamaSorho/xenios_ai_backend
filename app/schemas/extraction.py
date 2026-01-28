@@ -78,6 +78,19 @@ class ExtractionJobResponse(BaseModel):
         from_attributes = True
 
 
+class ExtractionMetadata(BaseModel):
+    """Metadata about the extraction process."""
+
+    provider: str | None = Field(
+        None,
+        description="Extraction provider used (docling, reducto, csv_parser)",
+    )
+    extraction_time_ms: int | None = Field(
+        None,
+        description="Time taken for extraction in milliseconds",
+    )
+
+
 class ExtractionStatusResponse(BaseModel):
     """Response schema for extraction job status with results."""
 
@@ -95,6 +108,10 @@ class ExtractionStatusResponse(BaseModel):
     validation_errors: list[str] | None
     error_message: str | None
     extracted_data: dict[str, Any] | None
+    extraction_metadata: ExtractionMetadata | None = Field(
+        None,
+        description="Metadata about the extraction process",
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -260,3 +277,7 @@ class ExtractionWebhookPayload(BaseModel):
     extracted_data: dict[str, Any] | None
     error_message: str | None
     completed_at: datetime
+    extraction_metadata: ExtractionMetadata | None = Field(
+        None,
+        description="Metadata about the extraction process",
+    )

@@ -2,6 +2,7 @@
 
 import re
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -49,8 +50,9 @@ class InBodyExtractor(BaseExtractor):
     """
     Extract body composition data from InBody scan PDFs.
 
-    Uses IBM Docling for table and text extraction, with regex pattern
-    matching for field identification. Supports InBody 570, 770, and S10 models.
+    Uses configurable document extraction providers (Docling, Reducto, etc.)
+    with regex pattern matching for field identification.
+    Supports InBody 570, 770, and S10 models.
     """
 
     document_type = "inbody"
@@ -130,31 +132,46 @@ class InBodyExtractor(BaseExtractor):
         "right_leg": re.compile(r"R(?:ight)?\s*Leg\s*[:\s]*(\d+\.?\d*)", re.IGNORECASE),
     }
 
-    async def extract(self, file_path: str) -> ExtractionResult:
+    async def extract(
+        self,
+        file_path: str,
+        provider: str | None = None,
+    ) -> ExtractionResult:
         """
         Extract body composition data from InBody PDF.
 
         Args:
             file_path: Path to the InBody PDF file
+            provider: Optional provider name ("docling", "reducto").
+                     If not specified, uses the configured default.
 
         Returns:
             ExtractionResult with InBodyData or errors
         """
         import time
 
+        from app.services.extraction.providers import get_provider
+
         start_time = time.time()
         errors: list[str] = []
         warnings: list[str] = []
+        used_provider = provider
 
         try:
-            # Use Docling for PDF extraction
-            from docling.document_converter import DocumentConverter
+            # Get document extraction provider
+            doc_provider = get_provider(provider)
+            used_provider = doc_provider.name
+            logger.info(
+                "Using extraction provider",
+                provider=used_provider,
+                file_path=file_path,
+            )
 
-            converter = DocumentConverter()
-            result = converter.convert(file_path)
+            # Extract document content using provider
+            content = await doc_provider.extract(Path(file_path))
 
-            # Get all text content
-            full_text = self._get_full_text(result)
+            # Use markdown content if available, fallback to plain text
+            full_text = content.markdown or content.text
 
             if not full_text:
                 return ExtractionResult(
@@ -164,6 +181,7 @@ class InBodyExtractor(BaseExtractor):
                     errors=["Could not extract text from PDF"],
                     warnings=[],
                     extraction_time_ms=int((time.time() - start_time) * 1000),
+                    metadata={"provider": used_provider},
                 )
 
             # Detect InBody model
@@ -261,6 +279,7 @@ class InBodyExtractor(BaseExtractor):
                     errors=errors,
                     warnings=warnings,
                     extraction_time_ms=int((time.time() - start_time) * 1000),
+                    metadata={"provider": used_provider},
                 )
 
             # Validate extracted data
@@ -283,6 +302,7 @@ class InBodyExtractor(BaseExtractor):
                     errors=[f"Data validation failed: {str(e)}"],
                     warnings=warnings,
                     extraction_time_ms=int((time.time() - start_time) * 1000),
+                    metadata={"provider": used_provider},
                 )
 
             return ExtractionResult(
@@ -292,20 +312,25 @@ class InBodyExtractor(BaseExtractor):
                 errors=errors if not is_valid else [],
                 warnings=warnings,
                 extraction_time_ms=int((time.time() - start_time) * 1000),
+                metadata={"provider": used_provider},
             )
 
-        except ImportError:
-            logger.error("Docling not installed")
-            return ExtractionResult(
-                success=False,
-                data=None,
-                confidence=0.0,
-                errors=["Docling library not available"],
-                warnings=[],
-                extraction_time_ms=int((time.time() - start_time) * 1000),
-            )
         except Exception as e:
-            logger.error("InBody extraction failed", error=str(e), exc_info=True)
+            logger.error(
+                "InBody extraction failed",
+                error=str(e),
+                provider=used_provider,
+                exc_info=True,
+            )
+
+            # Try fallback to docling if we were using a different provider
+            if provider and provider.lower() != "docling":
+                logger.info("Attempting fallback to docling provider")
+                try:
+                    return await self.extract(file_path, provider="docling")
+                except Exception as fallback_error:
+                    logger.error("Fallback extraction also failed", error=str(fallback_error))
+
             return ExtractionResult(
                 success=False,
                 data=None,
@@ -313,6 +338,7 @@ class InBodyExtractor(BaseExtractor):
                 errors=[f"Extraction error: {str(e)}"],
                 warnings=[],
                 extraction_time_ms=int((time.time() - start_time) * 1000),
+                metadata={"provider": used_provider or "unknown"},
             )
 
     def validate(self, data: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -362,41 +388,6 @@ class InBodyExtractor(BaseExtractor):
                 errors.append(f"SMM ({smm} kg) seems inconsistent with lean mass ({lean_mass:.1f} kg)")
 
         return len(errors) == 0, errors
-
-    def _get_full_text(self, docling_result: Any) -> str:
-        """Extract all text from Docling result."""
-        texts: list[str] = []
-
-        # Get text from document
-        if hasattr(docling_result, "document"):
-            doc = docling_result.document
-
-            # Get text from text blocks
-            if hasattr(doc, "texts"):
-                for text_block in doc.texts:
-                    if hasattr(text_block, "text"):
-                        texts.append(text_block.text)
-
-            # Get text from tables
-            if hasattr(doc, "tables"):
-                for table in doc.tables:
-                    if hasattr(table, "to_text"):
-                        texts.append(table.to_text())
-                    elif hasattr(table, "cells"):
-                        for row in table.cells:
-                            for cell in row:
-                                if hasattr(cell, "text"):
-                                    texts.append(cell.text)
-
-        # Fallback: try export_to_markdown
-        if not texts and hasattr(docling_result, "document"):
-            try:
-                md = docling_result.document.export_to_markdown()
-                texts.append(md)
-            except Exception:
-                pass
-
-        return "\n".join(texts)
 
     def _detect_model(self, text: str) -> str | None:
         """Detect InBody device model from text."""

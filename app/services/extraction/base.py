@@ -16,6 +16,8 @@ class ExtractionResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     extraction_time_ms: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    """Additional metadata about the extraction (e.g., provider used)."""
 
 
 class BaseExtractor(ABC):

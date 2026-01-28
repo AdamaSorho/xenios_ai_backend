@@ -68,16 +68,21 @@ def run_async(coro):
     soft_time_limit=300,  # 5 minutes
     time_limit=600,  # 10 minutes hard limit
 )
-def process_extraction(self, job_id: str) -> dict[str, Any]:
+def process_extraction(self, job_id: str, provider: str | None = None) -> dict[str, Any]:
     """
     Process a document extraction job.
+
+    Args:
+        job_id: The extraction job ID to process.
+        provider: Optional extraction provider name ("docling", "reducto").
+                 If not specified, uses the configured default.
 
     Workflow:
     1. Fetch job from database
     2. Download file from S3
     3. Detect/confirm document type
     4. Route to appropriate extractor
-    5. Run extraction
+    5. Run extraction with specified provider
     6. Validate results
     7. Store results
     8. Update job status
@@ -86,7 +91,7 @@ def process_extraction(self, job_id: str) -> dict[str, Any]:
     # Ensure extractors are registered
     ensure_extractors_registered()
 
-    logger.info("Starting extraction job", job_id=job_id)
+    logger.info("Starting extraction job", job_id=job_id, provider=provider)
 
     conn = get_sync_db()
     temp_file_path: str | None = None
@@ -145,9 +150,17 @@ def process_extraction(self, job_id: str) -> dict[str, Any]:
         if not extractor:
             raise ValueError(f"No extractor registered for document type: {document_type}")
 
-        # 5. Run extraction
-        logger.info("Running extraction", job_id=job_id, document_type=document_type)
-        result: ExtractionResult = run_async(extractor.extract(temp_file_path))
+        # 5. Run extraction with specified provider
+        logger.info(
+            "Running extraction",
+            job_id=job_id,
+            document_type=document_type,
+            provider=provider,
+        )
+        result: ExtractionResult = run_async(extractor.extract(temp_file_path, provider=provider))
+
+        # Get the actual provider used (may differ from requested due to fallback)
+        used_provider = result.metadata.get("provider", "unknown")
 
         # 6. Store results
         if result.success:
@@ -180,6 +193,7 @@ def process_extraction(self, job_id: str) -> dict[str, Any]:
                 "Extraction completed successfully",
                 job_id=job_id,
                 confidence=result.confidence,
+                provider=used_provider,
             )
         else:
             run_async(
@@ -204,6 +218,7 @@ def process_extraction(self, job_id: str) -> dict[str, Any]:
                 "Extraction failed",
                 job_id=job_id,
                 errors=result.errors,
+                provider=used_provider,
             )
 
         # 7. Send webhook notification if configured
@@ -220,6 +235,8 @@ def process_extraction(self, job_id: str) -> dict[str, Any]:
                     confidence_score=result.confidence if result.success else None,
                     extracted_data=result.data if result.success else None,
                     error_message="; ".join(result.errors) if result.errors else None,
+                    provider=used_provider,
+                    extraction_time_ms=result.extraction_time_ms,
                 )
             )
 
@@ -237,6 +254,7 @@ def process_extraction(self, job_id: str) -> dict[str, Any]:
             "document_type": document_type,
             "confidence": result.confidence,
             "errors": result.errors,
+            "provider": used_provider,
         }
 
     except Exception as e:
@@ -339,8 +357,20 @@ async def _send_webhook(
     confidence_score: float | None,
     extracted_data: dict | None,
     error_message: str | None,
+    provider: str | None = None,
+    extraction_time_ms: int | None = None,
 ) -> None:
     """Send webhook notification on extraction completion."""
+    from app.schemas.extraction import ExtractionMetadata
+
+    # Build extraction metadata
+    extraction_metadata = None
+    if provider or extraction_time_ms:
+        extraction_metadata = ExtractionMetadata(
+            provider=provider,
+            extraction_time_ms=extraction_time_ms,
+        )
+
     payload = ExtractionWebhookPayload(
         event="extraction.completed",
         job_id=job_id,
@@ -352,6 +382,7 @@ async def _send_webhook(
         extracted_data=extracted_data,
         error_message=error_message,
         completed_at=datetime.now(timezone.utc),
+        extraction_metadata=extraction_metadata,
     )
 
     try:

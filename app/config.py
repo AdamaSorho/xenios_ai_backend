@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     extraction_max_file_size_mb: int = 50
     extraction_webhook_url: str = ""  # Optional webhook for completion notifications
 
+    # Extraction provider settings (Spec 0007)
+    reducto_api_key: str = ""  # Reducto.ai API key for cloud extraction
+    extraction_default_provider: str = "docling"  # Default: docling | reducto
+
     # RAG Settings (Spec 0004)
     rag_similarity_threshold: float = 0.7
     rag_max_context_items: int = 10
