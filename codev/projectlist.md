@@ -175,9 +175,20 @@ projects:
     notes: "PR #7 merged 2026-01-27. Ready for production validation."
 ```
 
+  - id: "0006"
+    title: "Multi-Provider LLM Support"
+    summary: "Add direct Claude API alongside OpenRouter with runtime provider selection via request headers"
+    status: conceived
+    priority: medium
+    files:
+      spec: codev/specs/0006-multi-provider-llm.md
+    dependencies: ["0001"]
+    tags: [features, llm, architecture]
+    notes: "Allows clients to choose between OpenRouter and direct Claude API"
+
 ## Next Available Number
 
-**0006** - Reserve this number for your next project
+**0007** - Reserve this number for your next project
 
 ---
 
