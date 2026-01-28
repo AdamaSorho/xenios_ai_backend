@@ -178,10 +178,11 @@ projects:
   - id: "0006"
     title: "Multi-Provider LLM Support"
     summary: "Add direct Claude API alongside OpenRouter with runtime provider selection via request headers"
-    status: conceived
+    status: planned
     priority: medium
     files:
       spec: codev/specs/0006-multi-provider-llm.md
+      plan: codev/plans/0006-multi-provider-llm.md
     dependencies: ["0001"]
     tags: [features, llm, architecture]
     notes: "Allows clients to choose between OpenRouter and direct Claude API"
