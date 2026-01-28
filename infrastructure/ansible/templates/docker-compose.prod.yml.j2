@@ -13,9 +13,7 @@ services:
       - ../.env
     environment:
       - ENVIRONMENT=production
-      - DEBUG=false
       - REDIS_URL=redis://redis:6379/0
-      - LOG_LEVEL=INFO
     depends_on:
       redis:
         condition: service_healthy
