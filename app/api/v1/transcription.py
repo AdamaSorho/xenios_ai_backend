@@ -21,7 +21,7 @@ from fastapi import (
 
 from app.config import get_settings
 from app.core.auth import UserContext, get_current_user
-from app.core.database import get_db
+from app.core.database import get_db_session
 from app.core.logging import get_logger
 from app.schemas.transcription import (
     ReprocessRequest,
@@ -151,7 +151,7 @@ async def upload_audio(
         Form(description="Webhook URL to notify on completion"),
     ] = None,
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> TranscriptionJobResponse:
     """
     Upload audio for transcription.
@@ -296,7 +296,7 @@ async def upload_audio(
 async def get_transcription_status(
     job_id: UUID,
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> TranscriptionStatusResponse:
     """
     Get transcription job status and progress.
@@ -326,7 +326,7 @@ async def get_transcription_status(
 async def get_transcript(
     job_id: UUID,
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> TranscriptResponse:
     """
     Get full transcript with utterances.
@@ -403,7 +403,7 @@ async def get_transcript(
 async def get_summary(
     job_id: UUID,
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> SessionSummaryResponse:
     """
     Get AI-generated session summary.
@@ -477,7 +477,7 @@ async def list_sessions(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> TranscriptionListResponse:
     """
     List transcription jobs for the current coach.
@@ -560,7 +560,7 @@ async def reprocess_transcription(
     job_id: UUID,
     request: ReprocessRequest | None = None,
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> TranscriptionJobResponse:
     """
     Retry failed transcription or regenerate summary.
@@ -644,7 +644,7 @@ async def update_speaker_labels(
     job_id: UUID,
     speaker_updates: list[SpeakerLabelUpdate],
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> dict:
     """
     Manually correct speaker labels.
@@ -696,7 +696,7 @@ async def delete_transcription(
     job_id: UUID,
     delete_audio: Annotated[bool, Query(description="Also delete the audio file")] = True,
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> None:
     """
     Delete transcription job and all associated data.

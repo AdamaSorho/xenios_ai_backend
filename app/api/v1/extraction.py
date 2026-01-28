@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 
 from app.config import get_settings
 from app.core.auth import UserContext, get_current_user
-from app.core.database import get_db
+from app.core.database import get_db_session
 from app.core.logging import get_logger
 from app.schemas.extraction import (
     DocumentType,
@@ -74,7 +74,7 @@ async def upload_document(
         Form(description="Optional webhook URL for completion notification"),
     ] = None,
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> ExtractionJobResponse:
     """
     Upload a document for extraction.
@@ -176,7 +176,7 @@ async def upload_document(
 async def get_extraction_status(
     job_id: UUID,
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> ExtractionStatusResponse:
     """
     Get extraction job status and results.
@@ -234,7 +234,7 @@ async def list_extraction_jobs(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> ExtractionListResponse:
     """
     List extraction jobs for the current coach.
@@ -308,7 +308,7 @@ async def reprocess_extraction(
     job_id: UUID,
     request: ExtractionReprocessRequest | None = None,
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> ExtractionJobResponse:
     """
     Retry a failed extraction job.
@@ -387,7 +387,7 @@ async def delete_extraction_job(
     job_id: UUID,
     delete_file: Annotated[bool, Query(description="Also delete the source file")] = False,
     user: UserContext = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_db_session),
 ) -> None:
     """
     Delete an extraction job.

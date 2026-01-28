@@ -136,7 +136,7 @@ class SourceCitation(BaseModel):
     source_id: str = Field(..., description="Source identifier")
     relevance_score: float = Field(..., ge=0.0, le=1.0, description="Relevance to query")
     snippet: str = Field(..., description="Relevant excerpt from the source")
-    date: date | None = Field(default=None, description="Date associated with the source")
+    source_date: date | None = Field(default=None, description="Date associated with the source")
 
 
 class ChatResponse(BaseModel):

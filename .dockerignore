@@ -57,9 +57,11 @@ Dockerfile*
 infrastructure/
 
 # Development files
-*.md
 Makefile
 .builder*
+CHANGELOG.md
+CONTRIBUTING.md
+# Keep README.md (needed by pyproject.toml)
 
 # Codev
 codev/
