@@ -110,7 +110,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.worker
-    command: uv run celery -A app.workers.celery_app flower --port=5555 --basic-auth=${FLOWER_USER}:${FLOWER_PASSWORD}
+    command: uv run celery -A app.workers.celery_app flower --port=5555 --basic-auth={{ flower_user }}:{{ flower_password }}
     ports:
       - "127.0.0.1:5555:5555"
     env_file:
