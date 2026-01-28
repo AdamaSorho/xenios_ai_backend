@@ -35,6 +35,8 @@ dependencies = [
     "pgvector>=0.2.0",
     "openai>=1.0.0",
     "tiktoken>=0.5.0",
+    # Multi-Provider LLM Support (Spec 0006)
+    "anthropic>=0.40.0",
 ]
 
 [project.optional-dependencies]

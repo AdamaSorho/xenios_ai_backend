@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from app.core.auth import UserContext, get_current_user, verify_coach_client_relationship
 from app.core.database import get_db_session
 from app.core.logging import get_logger
+from app.dependencies import LLMClientDep
 from app.schemas.rag import ChatRequest, ChatResponse
 from app.services.rag.chat import ChatService
 
@@ -22,6 +23,7 @@ async def chat_complete(
     request: ChatRequest,
     user: Annotated[UserContext, Depends(get_current_user)],
     http_request: Request,
+    llm_client: LLMClientDep,
 ):
     """
     Generate a grounded chat response.
@@ -35,6 +37,10 @@ async def chat_complete(
     - confidence: Score based on context relevance
     - has_context: Whether relevant context was found
     - conversation_id: ID for continuing the conversation
+
+    Use the X-LLM-Provider header to override the default provider:
+    - X-LLM-Provider: openrouter (default)
+    - X-LLM-Provider: anthropic
     """
     async with get_db_session() as db:
         # Verify coach has access (returns 404 per spec to prevent enumeration)
@@ -55,7 +61,7 @@ async def chat_complete(
             has_conversation_id=request.conversation_id is not None,
         )
 
-        chat_service = ChatService(db)
+        chat_service = ChatService(db, llm_client=llm_client)
         response = await chat_service.generate_response(
             client_id=request.client_id,
             coach_id=user.user_id,
@@ -73,6 +79,7 @@ async def chat_stream(
     request: ChatRequest,
     user: Annotated[UserContext, Depends(get_current_user)],
     http_request: Request,
+    llm_client: LLMClientDep,
 ):
     """
     Stream a grounded chat response via Server-Sent Events.
@@ -83,6 +90,10 @@ async def chat_stream(
     - event: chunk, data: {"type": "chunk", "content": "text..."}
     - event: done, data: {"type": "done", "sources": [...], "confidence": 0.85, ...}
     - event: error, data: {"type": "error", "code": "...", "message": "..."}
+
+    Use the X-LLM-Provider header to override the default provider:
+    - X-LLM-Provider: openrouter (default)
+    - X-LLM-Provider: anthropic
     """
     async def generate():
         async with get_db_session() as db:
@@ -94,7 +105,7 @@ async def chat_stream(
                     client_id=str(request.client_id),
                     raise_404=True,
                 )
-            except Exception as e:
+            except Exception:
                 error_data = json.dumps({
                     "type": "error",
                     "code": "UNAUTHORIZED",
@@ -112,7 +123,7 @@ async def chat_stream(
                 client_id=str(request.client_id),
             )
 
-            chat_service = ChatService(db)
+            chat_service = ChatService(db, llm_client=llm_client)
 
             try:
                 async for chunk in chat_service.generate_response_stream(
