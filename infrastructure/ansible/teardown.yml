@@ -1,0 +1,32 @@
+---
+- name: Teardown Xenios AI Backend
+  hosts: xenios
+  become: true
+
+  tasks:
+    - name: Stop and remove containers
+      community.docker.docker_compose_v2:
+        project_src: /opt/xenios/docker
+        files:
+          - docker-compose.prod.yml
+        state: absent
+        remove_volumes: true
+        remove_images: local
+      ignore_errors: true
+
+    - name: Remove application directory
+      file:
+        path: /opt/xenios
+        state: absent
+
+    - name: Prune Docker system
+      community.docker.docker_prune:
+        containers: true
+        images: true
+        volumes: true
+        networks: true
+        builder_cache: true
+
+    - name: Display teardown status
+      debug:
+        msg: "✅ Teardown complete. All containers, images, volumes and app files removed."
